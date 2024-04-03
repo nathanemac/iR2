@@ -3,6 +3,10 @@ mutable struct MPR2Solver{R, S <: AbstractVector{R}} <: AbstractOptimizationSolv
   xk::S
   ∇fk::S
   mν∇fk::S
+  gfk
+  fk
+  hk
+  sk
   xkn::S
   s::S
   has_bnds::Bool
@@ -20,11 +24,16 @@ function MPR2Solver(
   x0::S,
   options::ROSolverOptions,
   l_bound::S,
-  u_bound::S,
+  u_bound::S;
 ) where {R <: Real, S <: AbstractVector{R}}
   maxIter = options.maxIter
   xk = similar(x0)
   ∇fk = similar(x0)
+  Π = [Float16, Float32, Float64]
+  gfk = [Vector{R}(undef, length(x0)) for R in Π]
+  fk = [zero(R) for R in Π]
+  hk = [zero(R) for R in Π]
+  sk = [Vector{R}(undef, length(x0)) for R in Π]
   mν∇fk = similar(x0)
   xkn = similar(x0)
   s = zero(x0)
@@ -44,6 +53,10 @@ function MPR2Solver(
     xk,
     ∇fk,
     mν∇fk,
+    gfk,
+    fk, 
+    hk, 
+    sk,
     xkn,
     s,
     has_bnds,
@@ -139,12 +152,14 @@ function MPR2(
   x0::AbstractVector{R};
   selected::AbstractVector{<:Integer} = 1:length(x0),
   verb::Bool = false,
+  Π::Vector{DataType} = [Float64],
+  activate_mp::Bool = true,
   kwargs...,
 ) where {F <: Function, G <: Function, H, R <: Real}
   start_time = time()
   elapsed_time = 0.0
   solver = MPR2Solver(x0, options, similar(x0, 0), similar(x0, 0))
-  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, x0; selected = selected, verb = verb)
+  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, x0; selected = selected, verb = verb, activate_mp = activate_mp, Π=Π)
   elapsed_time = time() - start_time
   outdict = Dict(
     :Fhist => solver.Fobj_hist[1:k],
@@ -170,13 +185,15 @@ function MPR2(
   l_bound::AbstractVector{R},
   u_bound::AbstractVector{R};
   selected::AbstractVector{<:Integer} = 1:length(x0),
-  verb::Bool = false,
+  verb::Bool = false, # affiche les informations sur la multiprécision
+  Π::Vector{DataType} = [Float64], # fp formats utilisés
+  activate_mp::Bool = false, # active la multiprécision
   kwargs...,
 ) where {F <: Function, G <: Function, H, R <: Real}
   start_time = time()
   elapsed_time = 0.0
-  solver = MPR2Solver(x0, options, l_bound, u_bound)
-  k, status, fk, hk, ξ, p = MPR2!(solver, f, ∇f!, h, options, x0; selected = selected, verb = verb)
+  solver = MPR2Solver(x0, options, l_bound, u_bound) 
+  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, x0; selected = selected, verb = verb, activate_mp = activate_mp, Π=Π)  
   elapsed_time = time() - start_time
   outdict = Dict(
     :Fhist => solver.Fobj_hist[1:k],
@@ -202,6 +219,8 @@ function MPR2!(
   x0::AbstractVector{R};
   selected::AbstractVector{<:Integer} = 1:length(x0),
   verb::Bool = false,
+  activate_mp::Bool = false,
+  Π::Vector{DataType} = [Float64],
 ) where {F <: Function, G <: Function, H, R <: Real}
   start_time = time()
   elapsed_time = 0.0
@@ -217,23 +236,29 @@ function MPR2!(
   ν = options.ν
   γ = options.γ
 
-  κf = 1e-5
+  κf = 1e-5 # respectent les conditions du papier
   κ∇ = 4e-2
   κh = 2e-5
   κs = 1.
-  κξ = 1. # inutile
+  # κξ = 1. inutile
 
-  test_κ(κs, κf, κ∇, κh, η1, η2) # pour respecter les conditions de positivité (cf analyse de convergence)
+  if activate_mp
+    test_κ(κs, κf, κ∇, κh, η1, η2) # pour respecter les conditions de positivité (cf analyse de convergence)
+  end
+
 
   # initializing levels of precision for our inexact functions. 
   pf, pg, ph, ps = 1, 1, 1, 1
-  Π = [Float16, Float32, Float64]
   P = length(Π)
 
   # retrieve workspace
   xk = solver.xk
   xk .= x0
   ∇fk = solver.∇fk
+  gfk = solver.gfk
+  fk = solver.fk
+  hk = solver.hk
+  sk = solver.sk
   mν∇fk = solver.mν∇fk
   xkn = solver.xkn
   s = solver.s
@@ -260,16 +285,19 @@ function MPR2!(
   end
 
   # initialize parameters
-  hk = @views h(xk[selected])
-  if hk == Inf
+  hxk = @views h(xk[selected])
+  if hxk == Inf
     verbose > 0 && @info "R2: finding initial guess where nonsmooth term is finite"
     prox!(xk, h, x0, one(eltype(x0)))
-    hk = @views h(xk[selected])
-    hk < Inf || error("prox computation must be erroneous")
+    hxk = @views h(xk[selected])
+    hxk < Inf || error("prox computation must be erroneous")
     verbose > 0 && @debug "R2: found point where h has value" hk
   end
-  hk == -Inf && error("nonsmooth term is not proper")
-  hk = [Π[i](hk) for i=1:P]
+  hxk == -Inf && error("nonsmooth term is not proper")
+
+  for i=1:P
+    hk[i] = Π[i](hxk)
+  end
 
   if has_bnds
     @. l_bound_m_x = l_bound - xk
@@ -281,7 +309,7 @@ function MPR2!(
 
   if verbose > 0
     #! format: off
-    @info @sprintf "%6s %8s %8s %7s %8s %7s %7s %7s %1s %6s %6s %6s %6s" "iter" "f(x)" "h(x)" "√(ξ/ν)" "ρ" "σ" "‖x‖" "‖s‖" "" "pf" "pg" "ph" "ps"
+    @info @sprintf "%6s %8s %8s %7s %8s %7s %7s %7s %1s %6s %6s %6s %6s" "iter" "f(x)" "h(x)" "√(ξ/ν)" "ρ" "σ" "‖x‖" "‖s‖" "" "πf" "πg" "πh" "πs"
     #! format: off
   end
 
@@ -291,20 +319,29 @@ function MPR2!(
   ν = 1 / σk
   sqrt_ξ_νInv = one(R)
 
-  fk = [Π[i](f(xk)) for i=1:P] # fk est un vecteur de 3 éléments : f(xk) en les 3 précisions
+  fxk = f(xk)
+  for i=1:P
+    fk[i] = Π[i](fxk)
+  end
   ∇f!(∇fk, xk)
-  gfk = [Π[i].(∇fk) for i=1:P] # gfk est un vecteur de vecteur : gfk[i] contient ∇f(xk) en précision i. 
+
+  for i=1:P
+    gfk[i] .= ∇fk
+  end
 
   @. mν∇fk = -ν * gfk[pg] # !! En quelle précision ? --> Float64 car ν en Float64. 
 
   optimal = false
   tired = maxIter > 0 && k ≥ maxIter || elapsed_time > maxTime
 
+  flags=[false, false, false] # pour contrôler l'affichage dans les fonctions de test de précision.
+
+
   while !(optimal || tired)
     k = k + 1
     elapsed_time = time() - start_time
-    Fobj_hist[k] = Π[end](fk[pf]) # cast en Float64 pour l'affichage
-    Hobj_hist[k] = Π[end](hk[ph]) # cast en Float64 pour l'affichage
+    Fobj_hist[k] = Π[end].(fk[pf]) # cast en Float64 pour l'affichage
+    Hobj_hist[k] = Π[end].(hk[ph]) # cast en Float64 pour l'affichage
     p_hist[k] = [pf, pg, ph, ps]
 
     # define model
@@ -313,16 +350,24 @@ function MPR2!(
 
     prox!(s, ψ, mν∇fk, ν) # en Float64
     Complex_hist[k] += 1
-    sk = [Π[i].(s) for i=1:P] # sk est un vecteur de 3 éléments : s en les 3 précisions
 
-    pf, ps = test_condition_f(fk, sk, σk, κf, pf, ps, Π, k, verb)
-    ph, ps = test_condition_h(hk, sk, σk, κh, ph, ps, Π, k, verb)
-    pg, ps = test_condition_∇f(gfk, sk, σk, κ∇, pg, ps, Π, k, verb)
-    # la précision de chaque fonction diffère pour plus de flexibilité. 
-    mks = Π[ps](mk(sk[ps])) # en Float16 à l'itération 1
+    for (i, r) in enumerate(Π)
+      sk[i] = map(r, s)  # Utilisez map pour appliquer le type R à chaque élément de s
+    end
+
+    if activate_mp
+      pf, ps, flags = test_condition_f(fk, sk, σk, κf, pf, ps, Π, k, verb, flags)
+      ph, ps, flags = test_condition_h(hk, sk, σk, κh, ph, ps, Π, k, verb, flags)
+      pg, ps, flags = test_condition_∇f(gfk, sk, σk, κ∇, pg, ps, Π, k, verb, flags)
+      # la précision de chaque variable diffère pour plus de flexibilité. 
+    end
+
+    mks = Π[ps](mk(sk[ps])) 
     ξ = hk[ph] - mks + max(1, abs(hk[ph])) * 10 * eps() # casté en la précision de hk[ph]. 
-    
-    ps, ph, ξ = test_assumption_6(ξ, κs, σk, sk, Π, ps, ph, mk, hk, k, verb)
+    if activate_mp
+      ps, ph, ξ, flags = test_assumption_6(ξ, κs, σk, sk, Π, ps, ph, mk, hk, k, verb, flags)
+    end
+
     sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / ν) : sqrt(-ξ / ν) # en Float64 car ξ en Float64
 
     if ξ ≥ 0 && k == 1
@@ -339,7 +384,8 @@ function MPR2!(
     end
 
     xkn .= xk .+ sk[ps] # casté en la précision de xk (Float64)
-    fkn = Π[pf].(f(xkn))
+    fxkn = f(xkn)
+    fkn = Π[pf].(fxkn)
     hkn = Π[ph].(@views h(xkn[selected]))
     hkn == -Inf && error("nonsmooth term is not proper")
 
@@ -349,8 +395,7 @@ function MPR2!(
     if (verbose > 0) && (k % ptf == 0)
       #! format: off
       σ_stat = (η2 ≤ ρk < Inf) ? "↘" : (ρk < η1 ? "↗" : "=")
-      @info @sprintf "%6d %8.1e %8.1e %7.1e %8.1e %7.1e %7.1e %7.1e %1s %6d %6d %6d %6d" k fk[pf] hk[ph] sqrt_ξ_νInv ρk σk norm(xk) norm(sk[ps]) σ_stat pf pg ph ps
-
+      @info @sprintf "%6d %8.1e %8.1e %7.1e %8.1e %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k fk[pf] hk[ph] sqrt_ξ_νInv ρk σk norm(xk) norm(sk[ps]) σ_stat Π[pf] Π[pg] Π[ph] Π[ps]
       #! format: on
     end
 
@@ -365,10 +410,18 @@ function MPR2!(
         @. u_bound_m_x = u_bound - xk
         set_bounds!(ψ, l_bound_m_x, u_bound_m_x)
       end
-      fk = [Π[i](fkn) for i=1:P]
-      hk = [Π[i](hkn) for i=1:P]
+
+      for i=1:P
+        fk[i] = Π[i](fkn)
+      end
+      for i=1:P
+        hk[i] = Π[i](hkn)
+      end
+
       ∇f!(∇fk, xk)
-      gfk = [Π[i].(∇fk) for i=1:P]
+      for i=1:P
+        gfk[i] .= ∇fk
+      end
 
       shift!(ψ, xk)
     end
@@ -389,7 +442,7 @@ function MPR2!(
       @info @sprintf "%6d %8.1e %8.1e" k fk[pf] hk[ph]
     elseif optimal
       #! format: off
-      @info @sprintf "%6d %8.1e %8.1e %7.1e %8s %7.1e %7.1e %7.1e %1s %6d %6d %6d %6d" k fk[pf] hk[ph] sqrt(ξ/ν) "" σk norm(xk) norm(s) "" pf pg ph ps 
+      @info @sprintf "%6d %8.1e %8.1e %7.1e %8s %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k fk[pf] hk[ph] sqrt(ξ/ν) "" σk norm(xk) norm(s) "" Π[pf] Π[pg] Π[ph] Π[ps]
       @info "R2: terminating with √(ξ/ν) = $(sqrt_ξ_νInv)"
     end
   end
@@ -403,5 +456,5 @@ function MPR2!(
   else
     :exception
   end
-  return k, status, Π[end](fk[pf]), Π[end](hk[ph]), sqrt_ξ_νInv, [pf, pg, ph, ps]
+  return k, status, Float64(fk[pf]), Float64(hk[ph]), sqrt_ξ_νInv, [pf, pg, ph, ps]
 end
