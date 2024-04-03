@@ -8,16 +8,18 @@ using Printf
 using SolverCore
 using Plots
 using JSOSolvers
+using OptimizationProblems.ADNLPProblems
+using OptimizationProblems
 
 include("iR2_Alg MP.jl")
 include("utils.jl")
 
 ####################
 
-nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.55, 2.345])
-# nlp = woods(get_nvar=1000)
+# nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.55, 2.345])
+nlp = woods(get_nvar=1000)
 h = NormL1(1.0)
-options = ROSolverOptions(verbose=1, maxIter = 1000)
+options = ROSolverOptions(verbose=1, maxIter = 10000)
 
 
 ####################
@@ -54,10 +56,8 @@ for field in fieldnames(typeof(options))
 end
 
 # Benchmark : 
-using ADNLPModels
 using SolverBenchmark
-using OptimizationProblems.ADNLPProblems
-using OptimizationProblems
+
 problems = (eval(Meta.parse(problem))() for problem ∈ OptimizationProblems.meta[!, :name])
 
 h = NormL1(1.0)

@@ -250,6 +250,7 @@ function MPR2!(
   # initializing levels of precision for our inexact functions. 
   pf, pg, ph, ps = 1, 1, 1, 1
   P = length(Π)
+  
 
   # retrieve workspace
   xk = solver.xk
@@ -294,6 +295,7 @@ function MPR2!(
     verbose > 0 && @debug "R2: found point where h has value" hk
   end
   hxk == -Inf && error("nonsmooth term is not proper")
+
 
   for i=1:P
     hk[i] = Π[i](hxk)
@@ -352,7 +354,7 @@ function MPR2!(
     Complex_hist[k] += 1
 
     for (i, r) in enumerate(Π)
-      sk[i] = map(r, s)  # Utilisez map pour appliquer le type R à chaque élément de s
+      sk[i] = map(r, s)  # map pour appliquer le type R à chaque élément de s
     end
 
     if activate_mp
