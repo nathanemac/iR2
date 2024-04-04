@@ -29,7 +29,7 @@ function MPR2Solver(
   maxIter = options.maxIter
   xk = similar(x0)
   ∇fk = similar(x0)
-  Π = [Float16, Float32, Float64]
+  Π = [Float16, Float32, Float64] # on peut surement faire mieux. En fait il faudrait que la taille des conteneurs (gfk, fk, hk, sk) depende de la taille de Π alors que ici, elle est fixée à 3.
   gfk = [Vector{R}(undef, length(x0)) for R in Π]
   fk = [zero(R) for R in Π]
   hk = [zero(R) for R in Π]
@@ -256,10 +256,10 @@ function MPR2!(
   xk = solver.xk
   xk .= x0
   ∇fk = solver.∇fk
-  gfk = solver.gfk
-  fk = solver.fk
-  hk = solver.hk
-  sk = solver.sk
+  gfk = solver.gfk # Du coup gfk a toujours 3 elements --> On veut que sa taille dépende de Π
+  fk = solver.fk # Idem 
+  hk = solver.hk # Idem 
+  sk = solver.sk # Idem
   mν∇fk = solver.mν∇fk
   xkn = solver.xkn
   s = solver.s
