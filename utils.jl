@@ -76,7 +76,7 @@ function test_assumption_6(ξ, κs, σk, sk, Π, ps, ph, mk, hk, k, verb, flags)
   while ξ < 1/2*κs*σk*norm(sk[ps])^2
     if (Π[ps] == Π[end]) && (Π[ph] == Π[end])
       if (flags[2] == false)
-        @warn "maximum precision already reached on f and s at iteration $k."
+        @warn "maximum precision already reached on h and s at iteration $k."
         flags[2] = true
       end
       break

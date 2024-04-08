@@ -16,16 +16,15 @@ include("utils.jl")
 
 ####################
 
-# nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.55, 2.345])
+nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.55, 2.345])
 nlp = woods(get_nvar=1000)
 h = NormL1(1.0)
-options = ROSolverOptions(verbose=1, maxIter = 10000)
-
+options = ROSolverOptions(verbose=1, maxIter = 1000, ϵa = 0., ϵr = 0.)
 
 ####################
 
 jso_res = RegularizedOptimization.R2(nlp, h, options)
-my_res = MPR2(nlp, h, options) # launches vanilla R2-Reg (one might add verbose=1 for more verbosity)
+my_res = MPR2(nlp, h, options, activate_mp=true) # launches vanilla R2-Reg (one might add verbose=1 for more verbosity)
 my_res = MPR2(nlp, h, options, activate_mp=true, Π=[Float16, Float32, Float64]) # launches iR2-Reg 
 my_res = MPR2(nlp, h, options, activate_mp=true, Π=[Float16, Float32, Float64], verb=true) # iR2-Reg with additional verbosity
 my_res = MPR2(nlp, h, options, activate_mp=true, Π = [Float16, Float32]) # for choosing fp formats
@@ -59,9 +58,6 @@ using SolverBenchmark
 
 problems = (eval(Meta.parse(problem))() for problem ∈ OptimizationProblems.meta[!, :name])
 
-h = NormL1(1.0)
-options = ROSolverOptions(verbose=0)
-
 solvers = Dict(
   :iR2_Reg => model -> MPR2(model, h, options),
   :R2_Reg => model -> RegularizedOptimization.R2(model, h, options),
@@ -72,7 +68,10 @@ stats = bmark_solvers(
   skipif=prob -> (!unconstrained(prob) || get_nvar(prob) < 10),
 )
 
-p = performance_profile(stats, df->Float64.(df.neval_grad))
+p1 = performance_profile(stats, df->Float64.(df.neval_grad))
+ylabel!("")
+p2 = performance_profile(stats, df->Float64.(df.elapsed_time))
+plot!(title="elapsed_time")
 
 using DataFrames
 df = DataFrame(R2_Reg_neval_grad = stats[:R2_Reg].neval_grad, iR2_Reg_neval_grad = stats[:iR2_Reg].neval_grad)

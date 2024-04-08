@@ -24,12 +24,12 @@ function MPR2Solver(
   x0::S,
   options::ROSolverOptions,
   l_bound::S,
-  u_bound::S;
+  u_bound::S,
+  Π::Vector{DataType};# Ajout de Π comme argument du constructeur
 ) where {R <: Real, S <: AbstractVector{R}}
   maxIter = options.maxIter
   xk = similar(x0)
   ∇fk = similar(x0)
-  Π = [Float16, Float32, Float64] # on peut surement faire mieux. En fait il faudrait que la taille des conteneurs (gfk, fk, hk, sk) depende de la taille de Π alors que ici, elle est fixée à 3.
   gfk = [Vector{R}(undef, length(x0)) for R in Π]
   fk = [zero(R) for R in Π]
   hk = [zero(R) for R in Π]
@@ -70,6 +70,7 @@ function MPR2Solver(
     p_hist,
   )
 end
+
 
 """
     MPR2(nlp, h, options)
@@ -115,18 +116,26 @@ In the second form, instead of `nlp`, the user may pass in
 * `Hobj_hist`: an array with the history of values of the nonsmooth objective
 * `Complex_hist`: an array with the history of number of inner iterations.
 """
-function MPR2(nlp::AbstractNLPModel, args...; kwargs...)
+
+function MPR2(
+  nlp::AbstractNLPModel, 
+  args...; 
+  Π::Vector{DataType} = [Float64], 
+  kwargs...
+)
   kwargs_dict = Dict(kwargs...)
   x0 = pop!(kwargs_dict, :x0, nlp.meta.x0)
-  xk, k, outdict = MPR2(
+    xk, k, outdict = MPR2(
     x -> obj(nlp, x),
     (g, x) -> grad!(nlp, x, g),
     args...,
     x0,
     nlp.meta.lvar,
     nlp.meta.uvar;
-    kwargs_dict...,
+    Π=Π,
+    kwargs_dict...
   )
+  
   ξ = outdict[:ξ]
   stats = GenericExecutionStats(nlp)
   set_status!(stats, outdict[:status])
@@ -137,13 +146,12 @@ function MPR2(nlp::AbstractNLPModel, args...; kwargs...)
   set_time!(stats, outdict[:elapsed_time])
   set_solver_specific!(stats, :Fhist, outdict[:Fhist])
   set_solver_specific!(stats, :Hhist, outdict[:Hhist])
-  #set_solver_specific!(stats, :NonSmooth, outdict[:NonSmooth])
   set_solver_specific!(stats, :SubsolverCounter, outdict[:Chist])
   set_solver_specific!(stats, :p_hist, outdict[:p_hist])
+  
   return stats
 end
 
-# method without bounds
 function MPR2(
   f::F,
   ∇f!::G,
@@ -152,20 +160,20 @@ function MPR2(
   x0::AbstractVector{R};
   selected::AbstractVector{<:Integer} = 1:length(x0),
   verb::Bool = false,
-  Π::Vector{DataType} = [Float64],
+  Π::Vector{DataType} = [Float64], 
   activate_mp::Bool = true,
-  kwargs...,
+  kwargs...
 ) where {F <: Function, G <: Function, H, R <: Real}
   start_time = time()
   elapsed_time = 0.0
-  solver = MPR2Solver(x0, options, similar(x0, 0), similar(x0, 0))
-  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, x0; selected = selected, verb = verb, activate_mp = activate_mp, Π=Π)
+  solver = MPR2Solver(x0, options, similar(x0, 0), similar(x0, 0), Π)  # Ajout de Π comme argument
+  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, x0; selected=selected, verb=verb, activate_mp=activate_mp, Π=Π)
   elapsed_time = time() - start_time
+  
   outdict = Dict(
     :Fhist => solver.Fobj_hist[1:k],
     :Hhist => solver.Hobj_hist[1:k],
     :Chist => solver.Complex_hist[1:k],
-    #:NonSmooth => h,
     :status => status,
     :fk => fk,
     :hk => hk,
@@ -173,6 +181,7 @@ function MPR2(
     :elapsed_time => elapsed_time,
     :p_hist => solver.p_hist[1:k],
   )
+  
   return solver.xk, k, outdict
 end
 
@@ -185,21 +194,20 @@ function MPR2(
   l_bound::AbstractVector{R},
   u_bound::AbstractVector{R};
   selected::AbstractVector{<:Integer} = 1:length(x0),
-  verb::Bool = false, # affiche les informations sur la multiprécision
-  Π::Vector{DataType} = [Float64], # fp formats utilisés
-  activate_mp::Bool = false, # active la multiprécision
-  kwargs...,
+  verb::Bool = false, 
+  Π::Vector{DataType} = [Float16, Float32, Float64],
+  activate_mp::Bool = false,
+  kwargs...
 ) where {F <: Function, G <: Function, H, R <: Real}
   start_time = time()
   elapsed_time = 0.0
-  solver = MPR2Solver(x0, options, l_bound, u_bound) 
-  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, x0; selected = selected, verb = verb, activate_mp = activate_mp, Π=Π)  
+  solver = MPR2Solver(x0, options, l_bound, u_bound, Π)  # Ajout de Π comme argument
+  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, x0; selected=selected, verb=verb, activate_mp=activate_mp, Π=Π)
   elapsed_time = time() - start_time
   outdict = Dict(
     :Fhist => solver.Fobj_hist[1:k],
     :Hhist => solver.Hobj_hist[1:k],
     :Chist => solver.Complex_hist[1:k],
-    #:NonSmooth => h,
     :status => status,
     :fk => fk,
     :hk => hk,
@@ -207,21 +215,24 @@ function MPR2(
     :elapsed_time => elapsed_time,
     :p_hist => solver.p_hist[1:k],
   )
+
   return solver.xk, k, outdict
 end
+  
+
 
 function MPR2!(
-  solver::MPR2Solver{R},
+  solver::MPR2Solver{R, S},
   f::F,
   ∇f!::G,
   h::H,
   options::ROSolverOptions{R},
-  x0::AbstractVector{R};
+  x0::S;
   selected::AbstractVector{<:Integer} = 1:length(x0),
   verb::Bool = false,
   activate_mp::Bool = false,
-  Π::Vector{DataType} = [Float64],
-) where {F <: Function, G <: Function, H, R <: Real}
+  Π::Vector{DataType} = [Float64]
+) where {F <: Function, G <: Function, H, R <: Real, S <: AbstractVector{R}}
   start_time = time()
   elapsed_time = 0.0
   ϵ = options.ϵa
@@ -236,7 +247,7 @@ function MPR2!(
   ν = options.ν
   γ = options.γ
 
-  κf = 1e-5 # respectent les conditions du papier
+  κf = 1e-5 # respectent les conditions du paΠer
   κ∇ = 4e-2
   κh = 2e-5
   κs = 1.
@@ -250,7 +261,6 @@ function MPR2!(
   # initializing levels of precision for our inexact functions. 
   pf, pg, ph, ps = 1, 1, 1, 1
   P = length(Π)
-  
 
   # retrieve workspace
   xk = solver.xk
@@ -325,7 +335,7 @@ function MPR2!(
   for i=1:P
     fk[i] = Π[i](fxk)
   end
-  ∇f!(∇fk, xk)
+  ∇f!(∇fk, xk) #TODO changer cela pour calculer le gradient en la précision courante
 
   for i=1:P
     gfk[i] .= ∇fk
@@ -373,7 +383,7 @@ function MPR2!(
     sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / ν) : sqrt(-ξ / ν) # en Float64 car ξ en Float64
 
     if ξ ≥ 0 && k == 1
-      ϵ += ϵr * sqrt_ξ_νInv # make stopping test absolute and relative
+      ϵ += ϵr * sqrt_ξ_νInv # make stopΠng test absolute and relative
     end
     
     if (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ)
@@ -420,7 +430,7 @@ function MPR2!(
         hk[i] = Π[i](hkn)
       end
 
-      ∇f!(∇fk, xk)
+      ∇f!(∇fk, xk) #TODO changer cela pour calculer le gradient en la précision courante. Pour l'instant, en la précision de xk = tout le temps FLoat64. 
       for i=1:P
         gfk[i] .= ∇fk
       end
