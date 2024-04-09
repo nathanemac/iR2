@@ -16,16 +16,17 @@ include("utils.jl")
 
 ####################
 
-# nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.55, 2.345])
+nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.55, 2.345])
 nlp = woods(get_nvar=1000)
-h = NormL1(1.0)
-options = ROSolverOptions(verbose=1, maxIter = 10000)
+h = NormL1(Float16(1.0))
+h2 = NormL1(1.0)
+options = ROSolverOptions(verbose=1, maxIter = 1000)
 
 
 ####################
 
 jso_res = RegularizedOptimization.R2(nlp, h, options)
-my_res = MPR2(nlp, h, options) # launches vanilla R2-Reg (one might add verbose=1 for more verbosity)
+my_res = MPR2(nlp, h2, options) # launches vanilla R2-Reg (one might add verbose=1 for more verbosity)
 my_res = MPR2(nlp, h, options, activate_mp=true, Π=[Float16, Float32, Float64]) # launches iR2-Reg 
 my_res = MPR2(nlp, h, options, activate_mp=true, Π=[Float16, Float32, Float64], verb=true) # iR2-Reg with additional verbosity
 my_res = MPR2(nlp, h, options, activate_mp=true, Π = [Float16, Float32]) # for choosing fp formats
