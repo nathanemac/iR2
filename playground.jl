@@ -16,9 +16,9 @@ include("utils.jl")
 
 ####################
 
-nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.55, 2.345])
+nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, Float16.([-1.55, 2.345]))
 nlp = woods(get_nvar=1000)
-h = NormL1(1.0)
+h = NormL1(Float16(1))
 options = ROSolverOptions(verbose=1, maxIter = 1000, ϵa = 0., ϵr = 0.)
 
 ####################

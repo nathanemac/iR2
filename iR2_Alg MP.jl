@@ -247,7 +247,7 @@ function MPR2!(
   ν = options.ν
   γ = options.γ
 
-  κf = 1e-5 # respectent les conditions du paΠer
+  κf = 1e-5 # respectent les conditions du papier
   κ∇ = 4e-2
   κh = 2e-5
   κs = 1.
