@@ -95,3 +95,31 @@ function test_assumption_6(ξ, κs, σk, sk, Π, ps, ph, mk, hk, k, verb, flags)
   end
   return ps, ph, ξ, flags
 end
+
+######################################################
+#################### Real MP #########################
+######################################################
+
+function test_condition_f(fk, sk, σk, κf, pf, ps, Π, k, verb, flags) # p : current level of precision
+  while abs(fk[pf])*(1- 1/(1 + eps(Π[pf]))) > κf*σk*norm(sk[ps])^2
+    if ((Π[pf] == Π[end]) && (Π[ps] == Π[end]))
+      if (flags[1] == false)
+        @warn "maximum precision already reached on f and s at iteration $k."
+        flags[1] = true
+      end
+      break
+    end
+    verb ==true && @info "condition on f not reached at iteration $k with precision $(Π[pf]) on f and $(Π[ps]) on s. Increasing precision : "
+    if Π[pf] == Π[end]
+      verb == true && @info " └──> maximum precision already reached on f. Trying to increase precision on s."
+      ps+=1
+      #TODO comment recalculer s avec la nouvelle précision?
+    else
+      pf+=1
+      #TODO comment recalculer f(xk) avec la nouvelle précision?
+
+    end
+    verb ==true && @info " └──> current precision on f is now $(Π[pf]) and s is now $(Π[ps])"
+  end
+  return pf, ps, flags
+end
