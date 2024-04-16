@@ -1,9 +1,9 @@
 
 mutable struct MPR2Solver{R, S} <: AbstractOptimizationSolver
-  x :: S # variable du point courant
+  x  # variable du point courant
   xk # conteneur des x en les 3 précisions #TODO : tout typer
-  ∇fk::S
-  mν∇fk::S
+  ∇fk
+  mν∇fk
   gfk
   fk
   hk
@@ -26,7 +26,7 @@ function MPR2Solver(
   options::ROSolverOptions,
   l_bound::S,
   u_bound::S,
-  Π::Vector{DataType};# Ajout de Π comme argument du constructeur
+  Π::Vector{DataType};
 ) where {R <: Real, S <: AbstractVector{R}}
   maxIter = options.maxIter
   x = similar(x0)
@@ -144,7 +144,7 @@ function MPR2(
   stats = GenericExecutionStats(nlp)
   set_status!(stats, outdict[:status])
   set_solution!(stats, x)
-  set_objective!(stats, outdict[:fk] + outdict[:hk])
+  set_objective!(stats, Float64.(outdict[:fk]) + Float64.(outdict[:hk]))
   set_residuals!(stats, zero(eltype(x)), ξ)
   set_iter!(stats, k)
   set_time!(stats, outdict[:elapsed_time])
@@ -272,6 +272,7 @@ function MPR2!(
   x = solver.x
   x .= x0
   xk = solver.xk
+  println("xk = ", xk)
   ∇fk = solver.∇fk
   gfk = solver.gfk 
   fk = solver.fk 
@@ -280,12 +281,10 @@ function MPR2!(
   mν∇fk = solver.mν∇fk
   xkn = solver.xkn
   s = solver.s
-  xk[px] .= x0 # on met à jour le conteneur
-  println("x0 = ", x0)
-  println("x = ", x)
-  println("xk = ", xk)
+  for i=1:P # on met à jour le conteneur
+    xk[i] .= x0
+  end
 
-  #TODO 15-04 : modifier xk car j'appelle xk partout ici, mais maintenant c'est un conteneur 
 
   # à l'initialisation, tous les vecteurs sont en Float16. 
   has_bnds = solver.has_bnds
@@ -351,8 +350,9 @@ function MPR2!(
   while !(optimal || tired)
     k = k + 1
     elapsed_time = time() - start_time
-    Fobj_hist[k] = Π[end].(fk[pf]) # cast en Float64 pour l'affichage
-    Hobj_hist[k] = Π[end].(hk[ph]) # cast en Float64 pour l'affichage
+
+    Fobj_hist[k] = fk[pf] 
+    Hobj_hist[k] = hk[ph] 
     p_hist[k] = [pf, pg, ph, ps]
 
     # define model
@@ -366,24 +366,24 @@ function MPR2!(
     φk(d) = dot(gfk[pg], d) # En Float16 initialement, puis dans celle du gradient. 
     mk(d)::R = φk(d) + ψ(d)::R # !! à la précision de ψ. On met le calcul de ψ dans le while pour que sa précision reste celle de x pour toutes les itérations. 
 
-    (activate_mp == true) && (ν = Π[pg](ν)) # on met à jour la précision de ν en celle du gradient pour que le calcul du prox passe. 
+    #(activate_mp == true) && (ν = Π[pg](ν)) # on met à jour la précision de ν en celle du gradient pour que le calcul du prox passe. 
     prox!(s, ψ, mν∇fk, ν)
 
     Complex_hist[k] += 1
 
     sk[ps] .= s # on met à jour le conteneur
 
-    # if activate_mp # changer cela pour faire de la vraie MP = recalculer les variables en précision supérieure plutôt que de les caster.
-    #   pf, ps, flags = test_condition_f(fk, sk, σk, κf, pf, ps, Π, k, verb, flags)
-    #   ph, ps, flags = test_condition_h(hk, sk, σk, κh, ph, ps, Π, k, verb, flags)
-    #   pg, ps, flags = test_condition_∇f(gfk, sk, σk, κ∇, pg, ps, Π, k, verb, flags)
-    # end
+    if activate_mp # changer cela pour faire de la vraie MP = recalculer les variables en précision supérieure plutôt que de les caster.
+      h, ps, s, pg, gfk, ∇fk, mν∇fk, ν, sk, pf, fk, flags = test_condition_f(nlp, h, fk, sk, s, σk, κf, xk, pf, ps, pg, gfk, ∇fk, mν∇fk, ν,  Π, k, verb, flags)
+      h, ps, s, pg, gfk, ∇fk, mν∇fk, ν, sk, ph, hk, flags = test_condition_h(nlp, h, hk, sk, xk, σk, κh, ph, ps, s, pg, gfk, ∇fk, mν∇fk, ν, Π, k, verb, flags)
+      h, ps, s, pg, gfk, ∇fk, mν∇fk, ν, sk, flags = test_condition_∇f(nlp, h, gfk, ∇fk, sk, xk, σk, κ∇, pg, ps, s, mν∇fk, ν, Π, k, verb, flags)
+    end
 
     mks = mk(sk[ps]) 
     ξ = hk[ph] - mks + max(1, abs(hk[ph])) * 10 * eps() # casté en la précision la plus haute entre ph et ps. 
 
     if activate_mp
-      ps, ph, ξ, flags = test_assumption_6(ξ, κs, σk, sk, Π, ps, ph, mk, hk, k, verb, flags)
+      h, ps, ph, ξ, flags, s, pg, gfk, ∇fk, mν∇fk, ν, sk, mks = test_assumption_6(ξ, κs, σk, sk, xk, Π, ps, s, pg, gfk, ∇fk, mν∇fk, ν, ph, mk, mks, hk, k, verb, flags)
     end
     #---------------------------------------------------------------
     # à partir de là, toutes les conditions de convergence sont garanties à l'itération k.
@@ -470,5 +470,5 @@ function MPR2!(
   else
     :exception
   end
-  return k, status, Float64(fk[pf]), Float64(hk[ph]), sqrt_ξ_νInv, [pf, pg, ph, ps]
+  return k, status, fk[pf], hk[ph], sqrt_ξ_νInv, [pf, pg, ph, ps]
 end
