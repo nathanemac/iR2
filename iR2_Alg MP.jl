@@ -251,7 +251,8 @@ function MPR2!(
   ν = options.ν
   γ = options.γ
 
-
+  # Implémentation archaïque des compteurs de gradient :
+  neval_grad = zeros(Int, 3)
 
   κf = 1e-5 # respectent les conditions du papier
   κ∇ = 4e-2
@@ -265,14 +266,13 @@ function MPR2!(
 
 
   # initializing levels of precision for our inexact functions. 
-  pf, pg, ph, ps, px = 1, 1, 1, 1, 1
+  pf, pg, ph, ps = 1, 1, 1, 1, 1
   P = length(Π)
 
   # retrieve workspace
-  x = solver.x
+  x = solver.x #TODO : je pense qu'on peut virer x car inutile.
   x .= x0
   xk = solver.xk
-  println("xk = ", xk)
   ∇fk = solver.∇fk
   gfk = solver.gfk 
   fk = solver.fk 
@@ -330,17 +330,20 @@ function MPR2!(
 
   local ξ::R
   k = 0
-  σk = max(1 / ν, σmin) # !! toujours en Float64
+  σk = max(1 / ν, σmin)
   ν = 1 / σk
   sqrt_ξ_νInv = one(R)
 
-  fxk = f(x) # en Float16 à l'initialisation
+  fxk = f(xk[pf]) 
   fk[pf] = fxk # on met à jour le conteneur
+  !!!
+  # ∇f!(∇fk, xk[3])
+  ∇f!(∇fk, xk[pg])
+  neval_grad[pg] += 1
 
-  ∇f!(∇fk, x) # En float 16 initialement car en la précison de xk
   gfk[pg] .= ∇fk # on met à jour le conteneur
-
-  @. mν∇fk = -ν * gfk[pg] # En Float16 initialement
+  
+  @. mν∇fk = -Float16(ν) * gfk[pg] # En Float64 initialement
 
   optimal = false
   tired = maxIter > 0 && k ≥ maxIter || elapsed_time > maxTime
@@ -356,24 +359,25 @@ function MPR2!(
     p_hist[k] = [pf, pg, ph, ps]
 
     # define model
-    if has_bnds
-      @. l_bound_m_x = l_bound - x
-      @. u_bound_m_x = u_bound - x
+    if has_bnds #TODO maybe change this 
+      @. l_bound_m_x = l_bound - xk[1]
+      @. u_bound_m_x = u_bound - xk[1]
       ψ = shifted(h, x, l_bound_m_x, u_bound_m_x, selected)
     else
-      ψ = shifted(h, x) # en Float16 à l'initialisation, puis en celle de x
+      # !!!
+      # h = NormL1(Π[ph](1.0))
+      ψ = shifted(h, xk[ph]) # en Float16 à l'initialisation, puis en celle de x
     end
     φk(d) = dot(gfk[pg], d) # En Float16 initialement, puis dans celle du gradient. 
     mk(d)::R = φk(d) + ψ(d)::R # !! à la précision de ψ. On met le calcul de ψ dans le while pour que sa précision reste celle de x pour toutes les itérations. 
-
-    #(activate_mp == true) && (ν = Π[pg](ν)) # on met à jour la précision de ν en celle du gradient pour que le calcul du prox passe. 
+    # !!! 
     prox!(s, ψ, mν∇fk, ν)
 
     Complex_hist[k] += 1
 
     sk[ps] .= s # on met à jour le conteneur
 
-    if activate_mp # changer cela pour faire de la vraie MP = recalculer les variables en précision supérieure plutôt que de les caster.
+    if activate_mp 
       h, ps, s, pg, gfk, ∇fk, mν∇fk, ν, sk, pf, fk, flags = test_condition_f(nlp, h, fk, sk, s, σk, κf, xk, pf, ps, pg, gfk, ∇fk, mν∇fk, ν,  Π, k, verb, flags)
       h, ps, s, pg, gfk, ∇fk, mν∇fk, ν, sk, ph, hk, flags = test_condition_h(nlp, h, hk, sk, xk, σk, κh, ph, ps, s, pg, gfk, ∇fk, mν∇fk, ν, Π, k, verb, flags)
       h, ps, s, pg, gfk, ∇fk, mν∇fk, ν, sk, flags = test_condition_∇f(nlp, h, gfk, ∇fk, sk, xk, σk, κ∇, pg, ps, s, mν∇fk, ν, Π, k, verb, flags)
@@ -404,7 +408,7 @@ function MPR2!(
       error("R2: prox-gradient step should produce a decrease but ξ = $(ξ)")
     end
 
-    xkn .= x .+ sk[ps] # casté en la précision la plus haute entre x et ps. Est-ce la même ? --> sûrement après avoir implémenté correctement les tests de précision.
+    xkn .= xk[ps] .+ sk[ps] 
     fkn = f(xkn)
     hkn = @views h(xkn[selected]) # fkn et hkn en la précision de xkn
     hkn == -Inf && error("nonsmooth term is not proper")
@@ -424,20 +428,25 @@ function MPR2!(
     end
 
     if η1 ≤ ρk < Inf
-      x .= xkn
+      for i=1:P # on met à jour le conteneur
+        xk[i] .= xkn
+      end
+
       if has_bnds
-        @. l_bound_m_x = l_bound - x
-        @. u_bound_m_x = u_bound - x
+        @. l_bound_m_x = l_bound - xk[1]
+        @. u_bound_m_x = u_bound - xk[1]
         set_bounds!(ψ, l_bound_m_x, u_bound_m_x)
       end
 
       fk[pf] = fkn
       hk[ph] = hkn
 
-      ∇f!(∇fk, x) #TODO changer cela pour calculer le gradient en la précision courante. Pour l'instant, en la précision de x = tout le temps FLoat64. 
+      ∇f!(∇fk, xk[pg])
+      neval_grad[pg] += 1
+
       gfk[pg] .= ∇fk # on met à jour le conteneur
 
-      shift!(ψ, x)
+      shift!(ψ, xk[ph])
     end
 
     if ρk < η1 || ρk == Inf

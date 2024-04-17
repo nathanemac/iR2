@@ -19,7 +19,7 @@ include("utils.jl")
 nlp=woods(;n=100)
 nlp = ADNLPModel(x -> 2(1-x[1])^2 + 10(x[1]-x[2]^2)^2, [-3.55, 2.345])
 h = NormL1(1.0)
-options = ROSolverOptions(verbose=3, maxIter = 50)
+options = ROSolverOptions(verbose=1, maxIter = 10000)
 
 
 ####################
@@ -29,7 +29,6 @@ my_res = MPR2(nlp, h, options) # launches vanilla R2-Reg (one might add verbose=
 my_res = MPR2(nlp, h, options, activate_mp=true, Π=[Float16, Float32, Float64], verb=true) # iR2-Reg with additional verbosity
 my_res = MPR2(nlp, h, options, activate_mp=true, Π = [Float16, Float32]) # for choosing fp formats
 
-# TODO 16-04 : chamgement de précisions pas affichés correctement - vérifier que tout est correctement mis à jour dans chaque fonction. 
 ####################
 
 K = [k for k=1:my_res.iter]
