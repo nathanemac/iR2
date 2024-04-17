@@ -23,9 +23,9 @@ options = ROSolverOptions(verbose=1, maxIter = 10000)
 
 
 ####################
-
+params = iR2RegParams([Float16, Float32, Float64])
 jso_res = RegularizedOptimization.R2(nlp, h, options)
-my_res = MPR2(nlp, h, options) # launches vanilla R2-Reg (one might add verbose=1 for more verbosity)
+my_res = MPR2(nlp, h, options, params) # launches vanilla R2-Reg (one might add verbose=1 for more verbosity)
 my_res = MPR2(nlp, h, options, activate_mp=true, Π=[Float16, Float32, Float64], verb=true) # iR2-Reg with additional verbosity
 my_res = MPR2(nlp, h, options, activate_mp=true, Π = [Float16, Float32]) # for choosing fp formats
 

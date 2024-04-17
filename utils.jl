@@ -12,8 +12,8 @@ function test_κ(κs, κf, κ∇, κh, η1, η2)
 #################### Real MP #########################
 ######################################################
 
-function test_condition_f(nlp, h, fk, sk, s, σk, κf, xk, pf, ps, pg, gfk, ∇fk, mν∇fk, ν, Π, k, verb, flags) # p : current level of precision
-  while abs(fk[pf])*(1- 1/(1 + eps(Π[pf]))) > κf*σk*norm(sk[ps])^2
+function test_condition_f(nlp, solver, verb, Π, flags) # p : current level of precision
+  while abs(solver.fk[pf])*(1- 1/(1 + eps(Π[pf]))) > κf*σk*norm(solver.sk[ps])^2
     if ((Π[pf] == Π[end]) && (Π[ps] == Π[end]))
       if (flags[1] == false)
         @warn "maximum precision already reached on f and s at iteration $k."
@@ -24,14 +24,16 @@ function test_condition_f(nlp, h, fk, sk, s, σk, κf, xk, pf, ps, pg, gfk, ∇f
     verb ==true && @info "condition on f not reached at iteration $k with precision $(Π[pf]) on f and $(Π[ps]) on s. Increasing precision : "
     if Π[pf] == Π[end]
       verb == true && @info " └──> maximum precision already reached on f. Trying to increase precision on s."
-      h, ps, s, pg, gfk, ∇fk, mν∇fk, ν, sk = recompute_prox!(nlp, pg, k, Π, xk, gfk, ∇fk, ps, s, mν∇fk, ν, sk)
+      ps, pg = recompute_prox!(nlp, ...)
     else
       pf+=1
-      fk[pf] = obj(nlp, xk[pf]) # on recalcule l'objectif en précision supérieure
-    end
+      solver.fk[pf] = obj(nlp, solver.xk[pf])
+      for i=1:len(Π)
+        solver.fk[i] .= solver.fk[pf]
+      end
     verb ==true && @info " └──> current precision on f is now $(Π[pf]) and s is $(Π[ps])"
   end
-  return h, ps, s, pg, gfk, ∇fk, mν∇fk, ν, sk, pf, fk, flags
+  return pf, ps, flags
 end
 
 function test_condition_h(nlp, h, hk, sk, xk, σk, κh, ph, ps, s, pg, gfk, ∇fk, mν∇fk, ν, Π, k, verb, flags) # p : current level of precision
@@ -109,19 +111,21 @@ end
 
 
 
-function recompute_grad!(nlp, pg, k, Π, xk, gfk, mν∇fk, ν, ∇fk) # p : current level of precision
+function recompute_grad!(nlp, solver, Π, pg) # p : current level of precision
   if Π[pg] == Π[end]
     @warn "maximum precision already reached on ∇f when recomputing gradient at iteration $k."
-    return pg, gfk, mν∇fk, ν, ∇fk
+    return pg 
   end
   pg+=1
   @info "recomputing gradient at iteration $k with precision $(Π[pg])"
-  grad!(nlp, ∇fk, xk[pg])
-  gfk[pg] .= ∇fk
+  grad!(nlp, solver.gfk[pg], xk[pg])
+  for i=1:len(Π)
+    solver.gfk[i] .= solver.gfk[pg]
+  end
 
   ν = Π[pg](ν) # toujours en la précision du gradient
-  @. mν∇fk = -ν * gfk[pg]
-  return pg, gfk, mν∇fk, ν, ∇fk
+  @. solver.mν∇fk = -ν * gfk[pg]
+  return pg
 end
 
 function recompute_prox!(nlp, pg, k, Π, xk, gfk, ∇fk, ps, s, mν∇fk, ν, sk) 

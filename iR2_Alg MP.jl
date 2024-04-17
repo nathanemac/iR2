@@ -21,16 +21,38 @@ mutable struct MPR2Solver{R, S} <: AbstractOptimizationSolver
   p_hist::Vector{Vector{Int64}}
 end
 
+mutable struct iR2RegParams
+  pf::Int
+  pg::Int
+  ph::Int
+  ps::Int
+  Π::Vector{DataType}
+  verb::Bool
+  activate_mp::Bool
+  flags::Vector{Bool}
+  κf
+  κh
+  κ∇
+  κs
+  σk
+  ν
+end
+
+function iR2RegParams(Π::Vector{DataType}; verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=zeros(Bool, 3), κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., σk=1., ν=1.)
+  return iR2RegParams(1, 1, 1, 1, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, σk, ν)
+end
+
 function MPR2Solver(
   x0::S,
   options::ROSolverOptions,
+  params::iR2RegParams,
   l_bound::S,
-  u_bound::S,
-  Π::Vector{DataType};
+  u_bound::S;
 ) where {R <: Real, S <: AbstractVector{R}}
   maxIter = options.maxIter
   x = similar(x0)
-  xk =  [Vector{R}(undef, length(x0)) for R in Π]
+  Π = params.Π
+  xk = [Vector{R}(undef, length(x0)) for R in Π]
   ∇fk = similar(x0)
   gfk = [Vector{R}(undef, length(x0)) for R in Π]
   fk = [zero(R) for R in Π]
@@ -124,7 +146,6 @@ In the second form, instead of `nlp`, the user may pass in
 function MPR2(
   nlp::AbstractNLPModel, 
   args...; 
-  Π::Vector{DataType} = [Float64], 
   kwargs...
 )
   kwargs_dict = Dict(kwargs...)
@@ -136,7 +157,6 @@ function MPR2(
     x0,
     nlp.meta.lvar,
     nlp.meta.uvar;
-    Π=Π,
     kwargs_dict...
   )
   
@@ -156,22 +176,21 @@ function MPR2(
   return stats
 end
 
+# method without bounds
 function MPR2(
   f::F,
   ∇f!::G,
   h::H,
   options::ROSolverOptions{R},
+  params::iR2RegParams,
   x0::AbstractVector{S};
   selected::AbstractVector{<:Integer} = 1:length(x0),
-  verb::Bool = false,
-  Π::Vector{DataType} = [Float64], 
-  activate_mp::Bool = true,
   kwargs...
 ) where {F <: Function, G <: Function, H, R <: Real, S <: Real}
   start_time = time()
   elapsed_time = 0.0
-  solver = MPR2Solver(x0, options, similar(x0, 0), similar(x0, 0), Π)
-  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, x0; selected=selected, verb=verb, activate_mp=activate_mp, Π=Π)
+  solver = MPR2Solver(x0, options, params, similar(x0, 0), similar(x0, 0))
+  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, x0; selected=selected, params=params,)
   elapsed_time = time() - start_time
   
   outdict = Dict(
@@ -194,19 +213,17 @@ function MPR2(
   ∇f!::G,
   h::H,
   options::ROSolverOptions{R},
+  params::iR2RegParams,
   x0::AbstractVector{S},
   l_bound::AbstractVector{S},
   u_bound::AbstractVector{S};
   selected::AbstractVector{<:Integer} = 1:length(x0),
-  verb::Bool = false, 
-  Π::Vector{DataType} = [Float16, Float32, Float64],
-  activate_mp::Bool = false,
   kwargs...
 ) where {F <: Function, G <: Function, H, R <: Real, S <: Real}
   start_time = time()
   elapsed_time = 0.0
-  solver = MPR2Solver(x0, options, l_bound, u_bound, Π)  # Ajout de Π comme argument
-  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, x0; selected=selected, verb=verb, activate_mp=activate_mp, Π=Π)
+  solver = MPR2Solver(x0, options, params, l_bound, u_bound,)
+  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, params, x0; selected=selected)
   elapsed_time = time() - start_time
   outdict = Dict(
     :Fhist => solver.Fobj_hist[1:k],
@@ -231,11 +248,9 @@ function MPR2!(
   ∇f!::G,
   h::H,
   options::ROSolverOptions,
+  p::iR2RegParams,
   x0::S;
   selected::AbstractVector{<:Integer} = 1:length(x0),
-  verb::Bool = false,
-  activate_mp::Bool = false,
-  Π::Vector{DataType} = [Float64]
 ) where {F <: Function, G <: Function, H, R <: Real, S}
   start_time = time()
   elapsed_time = 0.0
@@ -251,36 +266,24 @@ function MPR2!(
   ν = options.ν
   γ = options.γ
 
-  # Implémentation archaïque des compteurs de gradient :
-  neval_grad = zeros(Int, 3)
+  println(p.Π)
+  println(solver.xk)
 
-  κf = 1e-5 # respectent les conditions du papier
-  κ∇ = 4e-2
-  κh = 2e-5
-  κs = 1.
-  # κξ = 1. inutile
 
-  if activate_mp
-    test_κ(κs, κf, κ∇, κh, η1, η2) # pour respecter les conditions de positivité (cf analyse de convergence)
+  if p.activate_mp
+    test_κ(p.κs, p.κf, p.κ∇, p.κh, η1, η2) # pour respecter les conditions de positivité (cf analyse de convergence)
   end
 
-
-  # initializing levels of precision for our inexact functions. 
-  pf, pg, ph, ps = 1, 1, 1, 1, 1
-  P = length(Π)
-
   # retrieve workspace
-  x = solver.x #TODO : je pense qu'on peut virer x car inutile.
-  x .= x0
+
   xk = solver.xk
-  ∇fk = solver.∇fk
   gfk = solver.gfk 
   fk = solver.fk 
   hk = solver.hk 
   sk = solver.sk
   mν∇fk = solver.mν∇fk
   xkn = solver.xkn
-  s = solver.s
+
   for i=1:P # on met à jour le conteneur
     xk[i] .= x0
   end
@@ -310,17 +313,19 @@ function MPR2!(
   end
 
   # initialize parameters
-  hxk = @views h(x[selected])
+  hxk = @views h(solver.xk[ph][selected])
   if hxk == Inf
     verbose > 0 && @info "R2: finding initial guess where nonsmooth term is finite"
-    prox!(x, h, x0, one(eltype(x0)))
-    hxk = @views h(x[selected])
+    prox!(solver.xk[ph][selected], h, x0, one(eltype(x0)))
+    hxk = @views h(solver.xk[ph][selected])
     hxk < Inf || error("prox computation must be erroneous")
     verbose > 0 && @debug "R2: found point where h has value" hk
   end
   hxk == -Inf && error("nonsmooth term is not proper")
 
-  hk[ph] = hxk # on met à jour le conteneur 
+  for i=1:P # on met à jour le conteneur
+    hk[i] .= hxk
+  end
 
   if verbose > 0
     #! format: off
@@ -334,16 +339,18 @@ function MPR2!(
   ν = 1 / σk
   sqrt_ξ_νInv = one(R)
 
-  fxk = f(xk[pf]) 
-  fk[pf] = fxk # on met à jour le conteneur
-  !!!
-  # ∇f!(∇fk, xk[3])
-  ∇f!(∇fk, xk[pg])
-  neval_grad[pg] += 1
-
-  gfk[pg] .= ∇fk # on met à jour le conteneur
+  fxk = f(solver.xk[pf])
+  for i=1:P # on met à jour le conteneur
+    solver.fk[i] .= fxk
+  end
   
-  @. mν∇fk = -Float16(ν) * gfk[pg] # En Float64 initialement
+  ∇f!(gfk[pg], xk[pg])
+  for i=1:P # on met à jour le conteneur
+    solver.gfk[i] .= solver.gfk[pg]
+  end
+
+
+  @. solver.mν∇fk = -Π[pg].(ν) * solver.gfk[pg] # en la précision du gradient
 
   optimal = false
   tired = maxIter > 0 && k ≥ maxIter || elapsed_time > maxTime
@@ -354,33 +361,33 @@ function MPR2!(
     k = k + 1
     elapsed_time = time() - start_time
 
-    Fobj_hist[k] = fk[pf] 
-    Hobj_hist[k] = hk[ph] 
+    Fobj_hist[k] = solver.fk[pf] 
+    Hobj_hist[k] = solver.hk[ph] 
     p_hist[k] = [pf, pg, ph, ps]
 
     # define model
     if has_bnds #TODO maybe change this 
-      @. l_bound_m_x = l_bound - xk[1]
-      @. u_bound_m_x = u_bound - xk[1]
-      ψ = shifted(h, x, l_bound_m_x, u_bound_m_x, selected)
+      @. l_bound_m_x = l_bound - solver.xk[1]
+      @. u_bound_m_x = u_bound - solver.xk[1]
+      ψ = shifted(h, solver.xk[1], l_bound_m_x, u_bound_m_x, selected)
     else
-      # !!!
-      # h = NormL1(Π[ph](1.0))
-      ψ = shifted(h, xk[ph]) # en Float16 à l'initialisation, puis en celle de x
+      h = NormL1(Π[ph](1.0))
+      ψ = shifted(h, solver.xk[ph])
     end
-    φk(d) = dot(gfk[pg], d) # En Float16 initialement, puis dans celle du gradient. 
-    mk(d)::R = φk(d) + ψ(d)::R # !! à la précision de ψ. On met le calcul de ψ dans le while pour que sa précision reste celle de x pour toutes les itérations. 
-    # !!! 
-    prox!(s, ψ, mν∇fk, ν)
+    φk(d) = dot(solver.gfk[pg], d)
+    mk(d)::R = φk(d) + ψ(d)::R 
+
+    prox!(solver.sk[ps], ψ, solver.mν∇fk, ν) # à l'init, tout en Float16 donc ça passe
 
     Complex_hist[k] += 1
-
-    sk[ps] .= s # on met à jour le conteneur
+    for i=1:P # on met à jour le conteneur
+      solver.sk[i] .= solver.sk[ps]
+    end
 
     if activate_mp 
-      h, ps, s, pg, gfk, ∇fk, mν∇fk, ν, sk, pf, fk, flags = test_condition_f(nlp, h, fk, sk, s, σk, κf, xk, pf, ps, pg, gfk, ∇fk, mν∇fk, ν,  Π, k, verb, flags)
-      h, ps, s, pg, gfk, ∇fk, mν∇fk, ν, sk, ph, hk, flags = test_condition_h(nlp, h, hk, sk, xk, σk, κh, ph, ps, s, pg, gfk, ∇fk, mν∇fk, ν, Π, k, verb, flags)
-      h, ps, s, pg, gfk, ∇fk, mν∇fk, ν, sk, flags = test_condition_∇f(nlp, h, gfk, ∇fk, sk, xk, σk, κ∇, pg, ps, s, mν∇fk, ν, Π, k, verb, flags)
+       flags = test_condition_f!(nlp, solver, verb, Π, flags, pf, κf, σk, )
+       flags = test_condition_h!(nlp, solver, verb, Π, flags)
+       flags = test_condition_∇f!(nlp, solver, verb, Π, flags)
     end
 
     mks = mk(sk[ps]) 
