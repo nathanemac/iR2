@@ -164,7 +164,7 @@ function MPR2(
   stats = GenericExecutionStats(nlp)
   set_status!(stats, outdict[:status])
   set_solution!(stats, x)
-  set_objective!(stats, Float64.(outdict[:fk]) + Float64.(outdict[:hk]))
+  set_objective!(stats, typeof(nlp.meta.x0[1]).(outdict[:fk]) + typeof(nlp.meta.x0[1]).(outdict[:hk]))
   set_residuals!(stats, zero(eltype(x)), ξ)
   set_iter!(stats, k)
   set_time!(stats, outdict[:elapsed_time])
@@ -371,30 +371,32 @@ function MPR2!(
     end
 
     if p.activate_mp 
-       flags = test_condition_f!(nlp, solver, p, Π, flags, k)
-       flags = test_condition_h!(nlp, solver, p, Π, flags, k)
-       flags = test_condition_∇f!(nlp, solver, p, Π, flags, k)
+       h, flags = test_condition_f(nlp, solver, p, Π, flags, k)
+       h, flags = test_condition_h(nlp, solver, p, Π, flags, k)
+       h, flags = test_condition_∇f(nlp, solver, p, Π, flags, k)
     end
 
-    mks = mk(sk[p.ps]) # casté en la précision la + haute entre celle de mk et ps
-    ξ = hk[ph] - mks + max(1, abs(hk[ph])) * 10 * eps() # casté en la précision la plus haute entre ph et ps. 
+    mks = mk(solver.sk[p.ps]) # casté en la précision la + haute entre celle de mk et ps
+    ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps() # casté en la précision la plus haute entre ph et ps. 
 
-    if activate_mp
-      h, ps, ph, ξ, flags, s, pg, gfk, ∇fk, mν∇fk, ν, sk, mks = test_assumption_6(ξ, κs, σk, sk, xk, Π, ps, s, pg, gfk, ∇fk, mν∇fk, ν, ph, mk, mks, hk, k, verb, flags)
+    if p.activate_mp
+      h, ξ, flags = test_assumption_6(nlp, solver, p, Π, flags, k, ξ)
     end
     #-------------------------------------------------------------------------------------------
     # -- à partir de là, toutes les conditions de convergence sont garanties à l'itération k. --
     #-------------------------------------------------------------------------------------------
 
-    sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / ν) : sqrt(-ξ / ν)
+    sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
 
     if ξ ≥ 0 && k == 1
       ϵ += ϵr * sqrt_ξ_νInv # make stopping test absolute and relative
     end
     
     if (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ)
-      optimal = true
-      continue
+      if k > 1 # add this to avoid the case where the first iteration is optimal because of float16. 
+        optimal = true
+        continue
+      end
     end
 
     if (ξ < 0 && sqrt_ξ_νInv > neg_tol) 
@@ -406,7 +408,7 @@ function MPR2!(
     hkn = @views h(solver.xkn[selected]) # fkn et hkn en la précision de xkn = celle de ps 
     hkn == -Inf && error("nonsmooth term is not proper")
 
-    Δobj = (solver.fk[pf] + solver.hk[ph]) - (fkn + hkn) + max(1, abs(fk[end] + hk[end])) * 10 * eps() #TODO change eps() to eps(Π[p]), but which one? 
+    Δobj = (solver.fk[p.pf] + solver.hk[p.ph]) - (fkn + hkn) + max(1, abs(solver.fk[end] + solver.hk[end])) * 10 * eps() #TODO change eps() to eps(Π[p]), but which one? 
     ρk = Δobj / ξ # En la précision la + haute des 2
 
     if (verbose > 0) && (k % ptf == 0)
@@ -448,10 +450,12 @@ function MPR2!(
     end
 
     if ρk < η1 || ρk == Inf
-      σk = σk * γ
+      p.σk = p.σk * γ
     end
 
-    ν = Π[ps](1 / σk) # !!! Under/Overflow possible here.
+    p.ν = Π[p.ps](1 / p.σk) # !!! Under/Overflow possible here.
+    println("ν = ", p.ν)
+    println("ξ = ", ξ)
     tired = maxIter > 0 && k ≥ maxIter
     if !tired
       @. solver.mν∇fk = -Π[p.pg].(p.ν) * solver.gfk[p.pg] # en la précision du gradient
@@ -460,10 +464,10 @@ function MPR2!(
 
   if verbose > 0
     if k == 1
-      @info @sprintf "%6d %8.1e %8.1e" k solver.fk[p.pf] solveer.hk[p.ph]
+      @info @sprintf "%6d %8.1e %8.1e" k solver.fk[p.pf] solver.hk[p.ph]
     elseif optimal
       #! format: off
-      @info @sprintf "%6d %8.1e %8.1e %7.1e %8s %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k solver.fk[p.pf] solver.hk[p.ph] sqrt(ξ/p.ν) "" σk norm(solver.xk[end]) norm(solver.xk[end]) "" Π[p.pf] Π[p.pg] Π[p.ph] Π[p.ps]
+      @info @sprintf "%6d %8.1e %8.1e %7.1e %8s %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k solver.fk[p.pf] solver.hk[p.ph] sqrt(ξ/p.ν) "" p.σk norm(solver.xk[end]) norm(solver.xk[end]) "" Π[p.pf] Π[p.pg] Π[p.ph] Π[p.ps]
       @info "R2: terminating with √(ξ/ν) = $(sqrt_ξ_νInv)"
     end
   end
