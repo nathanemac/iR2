@@ -12,28 +12,28 @@ function test_κ(κs, κf, κ∇, κh, η1, η2)
 #################### Real MP #########################
 ######################################################
 
-function test_condition_f(nlp, solver, verb, Π, flags) # p : current level of precision
-  while abs(solver.fk[pf])*(1- 1/(1 + eps(Π[pf]))) > κf*σk*norm(solver.sk[ps])^2
-    if ((Π[pf] == Π[end]) && (Π[ps] == Π[end]))
+function test_condition_f(nlp, solver, p, Π, flags)
+  while abs(solver.fk[p.pf])*(1- 1/(1 + eps(Π[p.pf]))) > p.κf*p.σk*norm(solver.sk[p.ps])^2
+    if ((Π[p.pf] == Π[end]) && (Π[p.ps] == Π[end]))
       if (flags[1] == false)
         @warn "maximum precision already reached on f and s at iteration $k."
         flags[1] = true
       end
-      break
+      break # on passe sous le tapis pour les fois d'après que la condition passe pas.
     end
-    verb ==true && @info "condition on f not reached at iteration $k with precision $(Π[pf]) on f and $(Π[ps]) on s. Increasing precision : "
-    if Π[pf] == Π[end]
-      verb == true && @info " └──> maximum precision already reached on f. Trying to increase precision on s."
-      ps, pg = recompute_prox!(nlp, ...)
+    p.verb == true && @info "condition on f not reached at iteration $k with precision $(Π[p.pf]) on f and $(Π[p.ps]) on s. Increasing precision : "
+    if Π[p.pf] == Π[end]
+      p.verb == true && @info " └──> maximum precision already reached on f. Trying to increase precision on s."
+      ... = recompute_prox!(nlp, ...)
     else
-      pf+=1
-      solver.fk[pf] = obj(nlp, solver.xk[pf])
+      p.pf+=1
+      solver.fk[p.pf] = obj(nlp, solver.xk[p.pf])
       for i=1:len(Π)
-        solver.fk[i] .= solver.fk[pf]
+        solver.fk[i] .= solver.fk[p.pf]
       end
-    verb ==true && @info " └──> current precision on f is now $(Π[pf]) and s is $(Π[ps])"
+    verb == true && @info " └──> current precision on f is now $(Π[p.pf]) and s is $(Π[p.ps])"
   end
-  return pf, ps, flags
+  return flags
 end
 
 function test_condition_h(nlp, h, hk, sk, xk, σk, κh, ph, ps, s, pg, gfk, ∇fk, mν∇fk, ν, Π, k, verb, flags) # p : current level of precision
@@ -111,42 +111,45 @@ end
 
 
 
-function recompute_grad!(nlp, solver, Π, pg) # p : current level of precision
-  if Π[pg] == Π[end]
+function recompute_grad!(nlp, solver, p, Π, k) # p : current level of precision
+  if Π[p.pg] == Π[end]
     @warn "maximum precision already reached on ∇f when recomputing gradient at iteration $k."
-    return pg 
+    return 
   end
-  pg+=1
-  @info "recomputing gradient at iteration $k with precision $(Π[pg])"
-  grad!(nlp, solver.gfk[pg], xk[pg])
+  p.pg+=1
+  @info "recomputing gradient at iteration $k with precision $(Π[p.pg])"
+  grad!(nlp, solver.gfk[p.pg], solver.xk[p.pg])
   for i=1:len(Π)
-    solver.gfk[i] .= solver.gfk[pg]
+    solver.gfk[i] .= solver.gfk[p.pg]
   end
 
-  ν = Π[pg](ν) # toujours en la précision du gradient
-  @. solver.mν∇fk = -ν * gfk[pg]
-  return pg
+  p.ν = Π[p.pg](ν) # toujours en la précision du gradient
+  @. solver.mν∇fk = -p.ν * solver.gfk[p.pg]
+  return
 end
 
-function recompute_prox!(nlp, pg, k, Π, xk, gfk, ∇fk, ps, s, mν∇fk, ν, sk) 
-  # first, recompute_grad because we need the updated version to compute the proximal operator
-  pg, gfk, mν∇fk, ν, ∇fk = recompute_grad!(nlp, pg, k, Π, xk, gfk, mν∇fk, ν, ∇fk)
+function recompute_prox!(nlp, solver, p, k, Π) 
+  # first, recompute_grad because we need the updated version of solver.mν∇fk to compute the proximal operator 
+  recompute_grad!(nlp, solver, p, Π, k)
 
   # then, recompute proximal operator
-  if Π[ps] == Π[end]
+  if Π[p.ps] == Π[end]
     @warn "maximum precision already reached on s when recomputing prox at iteration $k."
-    return h, ps, s, pg, gfk, ∇fk, mν∇fk, ν, sk
+    return 
   end
-  ps+=1
 
-  h = NormL1(Π[ps](1.0))
-  ψ = shifted(h, xk[ps])
+  p.ps+=1
 
-  mν∇fk = Π[ps].(mν∇fk)
-  ν = Π[ps].(ν)
-  s = Π[ps].(s)
-  prox!(s, ψ, mν∇fk, ν) 
+  h = NormL1(Π[p.ps](1.0))
+  ψ = shifted(h, solver.xk[p.ps])
 
-  sk[ps] .= s
-  return h, ps, s, pg, gfk, ∇fk, mν∇fk, ν, sk
+  solver.mν∇fk = Π[p.ps].(solver.mν∇fk) # pourquoi le cast? 
+  p.ν = Π[p.ps].(p.ν)
+
+  prox!(solver.sk[p.ps], ψ, solver.mν∇fk, p.ν)
+  for i=1:len(Π)
+    solver.sk[i] .= solver.sk[p.ps]
+  end
+
+  return 
 end

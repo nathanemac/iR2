@@ -266,30 +266,17 @@ function MPR2!(
   ν = options.ν
   γ = options.γ
 
-  println(p.Π)
-  println(solver.xk)
-
-
   if p.activate_mp
-    test_κ(p.κs, p.κf, p.κ∇, p.κh, η1, η2) # pour respecter les conditions de positivité (cf analyse de convergence)
+    test_κ(p.κs, p.κf, p.κ∇, p.κh, η1, η2)
   end
 
-  # retrieve workspace
+  Π = p.Π
+  P = length(Π)
 
-  xk = solver.xk
-  gfk = solver.gfk 
-  fk = solver.fk 
-  hk = solver.hk 
-  sk = solver.sk
-  mν∇fk = solver.mν∇fk
-  xkn = solver.xkn
-
-  for i=1:P # on met à jour le conteneur
-    xk[i] .= x0
+  for i=1:P 
+    solver.xk[i] .= x0
   end
 
-
-  # à l'initialisation, tous les vecteurs sont en Float16. 
   has_bnds = solver.has_bnds
   if has_bnds
     l_bound = solver.l_bound
@@ -313,18 +300,18 @@ function MPR2!(
   end
 
   # initialize parameters
-  hxk = @views h(solver.xk[ph][selected])
+  hxk = @views h(solver.xk[p.ph][selected])
   if hxk == Inf
     verbose > 0 && @info "R2: finding initial guess where nonsmooth term is finite"
-    prox!(solver.xk[ph][selected], h, x0, one(eltype(x0)))
-    hxk = @views h(solver.xk[ph][selected])
+    prox!(solver.xk[p.ph][selected], h, x0, one(eltype(x0)))
+    hxk = @views h(solver.xk[p.ph][selected])
     hxk < Inf || error("prox computation must be erroneous")
     verbose > 0 && @debug "R2: found point where h has value" hk
   end
   hxk == -Inf && error("nonsmooth term is not proper")
 
-  for i=1:P # on met à jour le conteneur
-    hk[i] .= hxk
+  for i=1:P 
+    solver.hk[i] = Π[i].(hxk)
   end
 
   if verbose > 0
@@ -335,22 +322,21 @@ function MPR2!(
 
   local ξ::R
   k = 0
-  σk = max(1 / ν, σmin)
-  ν = 1 / σk
+  p.σk = max(1 / p.ν, σmin)
+  p.ν = Π[p.pg].(1 / p.σk) # !!! Under/Overflow possible here.
   sqrt_ξ_νInv = one(R)
 
-  fxk = f(solver.xk[pf])
-  for i=1:P # on met à jour le conteneur
-    solver.fk[i] .= fxk
-  end
-  
-  ∇f!(gfk[pg], xk[pg])
-  for i=1:P # on met à jour le conteneur
-    solver.gfk[i] .= solver.gfk[pg]
+  fxk = f(solver.xk[p.pf])
+  for i=1:P
+    solver.fk[i] = Π[i].(fxk)
   end
 
+  ∇f!(solver.gfk[p.pg], solver.xk[p.pg])
+  for i=1:P 
+    solver.gfk[i] .= solver.gfk[p.pg]
+  end
 
-  @. solver.mν∇fk = -Π[pg].(ν) * solver.gfk[pg] # en la précision du gradient
+  @. solver.mν∇fk = -Π[p.pg].(p.ν) * solver.gfk[p.pg] # en la précision du gradient
 
   optimal = false
   tired = maxIter > 0 && k ≥ maxIter || elapsed_time > maxTime
@@ -361,9 +347,9 @@ function MPR2!(
     k = k + 1
     elapsed_time = time() - start_time
 
-    Fobj_hist[k] = solver.fk[pf] 
-    Hobj_hist[k] = solver.hk[ph] 
-    p_hist[k] = [pf, pg, ph, ps]
+    Fobj_hist[k] = solver.fk[p.pf] 
+    Hobj_hist[k] = solver.hk[p.ph] 
+    p_hist[k] = [p.pf, p.pg, p.ph, p.ps]
 
     # define model
     if has_bnds #TODO maybe change this 
@@ -371,36 +357,36 @@ function MPR2!(
       @. u_bound_m_x = u_bound - solver.xk[1]
       ψ = shifted(h, solver.xk[1], l_bound_m_x, u_bound_m_x, selected)
     else
-      h = NormL1(Π[ph](1.0))
-      ψ = shifted(h, solver.xk[ph])
+      h = NormL1(Π[p.ph](1.0)) # need to redefine h at each iteration because when shifting: MethodError: no method matching shifted(::NormL1{Float64}, ::Vector{Float16}) so the norm and the shift vector must be same FP Format. 
+      ψ = shifted(h, solver.xk[p.ph])
     end
-    φk(d) = dot(solver.gfk[pg], d)
-    mk(d)::R = φk(d) + ψ(d)::R 
+    φk(d) = dot(solver.gfk[p.pg], d)
+    mk(d)::R = φk(d) + ψ(d)::R # FP format : highest between φk and ψ
 
-    prox!(solver.sk[ps], ψ, solver.mν∇fk, ν) # à l'init, tout en Float16 donc ça passe
+    prox!(solver.sk[p.ps], ψ, solver.mν∇fk, p.ν)
 
     Complex_hist[k] += 1
-    for i=1:P # on met à jour le conteneur
-      solver.sk[i] .= solver.sk[ps]
+    for i=1:P
+      solver.sk[i] .= solver.sk[p.ps]
     end
 
-    if activate_mp 
-       flags = test_condition_f!(nlp, solver, verb, Π, flags, pf, κf, σk, )
-       flags = test_condition_h!(nlp, solver, verb, Π, flags)
-       flags = test_condition_∇f!(nlp, solver, verb, Π, flags)
+    if p.activate_mp 
+       flags = test_condition_f!(nlp, solver, p, Π, flags, k)
+       flags = test_condition_h!(nlp, solver, p, Π, flags, k)
+       flags = test_condition_∇f!(nlp, solver, p, Π, flags, k)
     end
 
-    mks = mk(sk[ps]) 
+    mks = mk(sk[p.ps]) # casté en la précision la + haute entre celle de mk et ps
     ξ = hk[ph] - mks + max(1, abs(hk[ph])) * 10 * eps() # casté en la précision la plus haute entre ph et ps. 
 
     if activate_mp
       h, ps, ph, ξ, flags, s, pg, gfk, ∇fk, mν∇fk, ν, sk, mks = test_assumption_6(ξ, κs, σk, sk, xk, Π, ps, s, pg, gfk, ∇fk, mν∇fk, ν, ph, mk, mks, hk, k, verb, flags)
     end
-    #---------------------------------------------------------------
-    # à partir de là, toutes les conditions de convergence sont garanties à l'itération k.
-    #---------------------------------------------------------------
+    #-------------------------------------------------------------------------------------------
+    # -- à partir de là, toutes les conditions de convergence sont garanties à l'itération k. --
+    #-------------------------------------------------------------------------------------------
 
-    sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / ν) : sqrt(-ξ / ν) # en Float64 car ξ en Float64
+    sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / ν) : sqrt(-ξ / ν)
 
     if ξ ≥ 0 && k == 1
       ϵ += ϵr * sqrt_ξ_νInv # make stopping test absolute and relative
@@ -415,18 +401,18 @@ function MPR2!(
       error("R2: prox-gradient step should produce a decrease but ξ = $(ξ)")
     end
 
-    xkn .= xk[ps] .+ sk[ps] 
-    fkn = f(xkn)
-    hkn = @views h(xkn[selected]) # fkn et hkn en la précision de xkn
+    solver.xkn .= solver.xk[end] .+ solver.sk[end] # choix de le mettre en la précision la + haute, mais on pourrait le mettre en la précision de ps
+    fkn = f(solver.xkn)
+    hkn = @views h(solver.xkn[selected]) # fkn et hkn en la précision de xkn = celle de ps 
     hkn == -Inf && error("nonsmooth term is not proper")
 
-    Δobj = (fk[pf] + hk[ph]) - (fkn + hkn) + max(1, abs(fk[pf] + hk[ph])) * 10 * eps() #TODO change eps() to eps(Π[p]), but which one? 
+    Δobj = (solver.fk[pf] + solver.hk[ph]) - (fkn + hkn) + max(1, abs(fk[end] + hk[end])) * 10 * eps() #TODO change eps() to eps(Π[p]), but which one? 
     ρk = Δobj / ξ # En la précision la + haute des 2
 
     if (verbose > 0) && (k % ptf == 0)
       #! format: off
       σ_stat = (η2 ≤ ρk < Inf) ? "↘" : (ρk < η1 ? "↗" : "=")
-      @info @sprintf "%6d %8.1e %8.1e %7.1e %8.1e %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k fk[pf] hk[ph] sqrt_ξ_νInv ρk σk norm(x) norm(sk[ps]) σ_stat Π[pf] Π[pg] Π[ph] Π[ps]
+      @info @sprintf "%6d %8.1e %8.1e %7.1e %8.1e %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k solver.fk[p.pf] solver.hk[p.ph] sqrt_ξ_νInv ρk p.σk norm(solver.xk[end]) norm(solver.xk[end]) σ_stat Π[p.pf] Π[p.pg] Π[p.ph] Π[p.ps]
       #! format: on
     end
 
@@ -436,43 +422,48 @@ function MPR2!(
 
     if η1 ≤ ρk < Inf
       for i=1:P # on met à jour le conteneur
-        xk[i] .= xkn
+        solver.xk[i] .= solver.xkn # !! vérifier que chaque élément a un FP format différent
       end
 
-      if has_bnds
+      if has_bnds #TODO maybe change this
         @. l_bound_m_x = l_bound - xk[1]
         @. u_bound_m_x = u_bound - xk[1]
         set_bounds!(ψ, l_bound_m_x, u_bound_m_x)
       end
+      
+      for i=1:P
+        solver.fk[i] = Π[i].(fkn)
+      end
 
-      fk[pf] = fkn
-      hk[ph] = hkn
+      for i=1:P
+        solver.hk[i] = Π[i].(hkn)
+      end
 
-      ∇f!(∇fk, xk[pg])
-      neval_grad[pg] += 1
+      ∇f!(solver.gfk[p.pg], solver.xk[p.pg])
+      for i=1:P 
+        solver.gfk[i] .= solver.gfk[p.pg]
+      end
 
-      gfk[pg] .= ∇fk # on met à jour le conteneur
-
-      shift!(ψ, xk[ph])
+      shift!(ψ, solver.xk[p.ph])
     end
 
     if ρk < η1 || ρk == Inf
       σk = σk * γ
     end
 
-    ν = 1 / σk
+    ν = Π[ps](1 / σk) # !!! Under/Overflow possible here.
     tired = maxIter > 0 && k ≥ maxIter
     if !tired
-      @. mν∇fk = -ν * gfk[pg]
+      @. solver.mν∇fk = -Π[p.pg].(p.ν) * solver.gfk[p.pg] # en la précision du gradient
     end
   end
 
   if verbose > 0
     if k == 1
-      @info @sprintf "%6d %8.1e %8.1e" k fk[pf] hk[ph]
+      @info @sprintf "%6d %8.1e %8.1e" k solver.fk[p.pf] solveer.hk[p.ph]
     elseif optimal
       #! format: off
-      @info @sprintf "%6d %8.1e %8.1e %7.1e %8s %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k fk[pf] hk[ph] sqrt(ξ/ν) "" σk norm(x) norm(s) "" Π[pf] Π[pg] Π[ph] Π[ps]
+      @info @sprintf "%6d %8.1e %8.1e %7.1e %8s %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k solver.fk[p.pf] solver.hk[p.ph] sqrt(ξ/p.ν) "" σk norm(solver.xk[end]) norm(solver.xk[end]) "" Π[p.pf] Π[p.pg] Π[p.ph] Π[p.ps]
       @info "R2: terminating with √(ξ/ν) = $(sqrt_ξ_νInv)"
     end
   end
@@ -486,5 +477,5 @@ function MPR2!(
   else
     :exception
   end
-  return k, status, fk[pf], hk[ph], sqrt_ξ_νInv, [pf, pg, ph, ps]
+  return k, status, solver.fk[p.pf], solver.hk[p.ph], sqrt_ξ_νInv, [p.pf, p.pg, p.ph, p.ps]
 end
