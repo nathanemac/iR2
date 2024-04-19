@@ -24,17 +24,17 @@ function test_condition_f(nlp, solver, p, Π, flags, k)
     p.verb == true && @info "condition on f not reached at iteration $k with precision $(Π[p.pf]) on f and $(Π[p.ps]) on s. Increasing precision : "
     if Π[p.pf] == Π[end]
       p.verb == true && @info " └──> maximum precision already reached on f. Trying to increase precision on s."
-      h = recompute_prox!(nlp, solver, p, k, Π)
+      recompute_prox!(nlp, solver, p, k, Π)
     else
       p.pf+=1
       solver.fk[p.pf] = obj(nlp, solver.xk[p.pf])
-      for i=1:len(Π)
-        solver.fk[i] .= solver.fk[p.pf]
+      for i=1:length(Π)
+        solver.fk[i] = solver.fk[p.pf]
       end
     p.verb == true && @info " └──> current precision on f is now $(Π[p.pf]) and s is $(Π[p.ps])"
     end
   end
-  return h, flags
+  return flags
 end
 
 function test_condition_h(nlp, solver, p, Π, flags, k) # p : current level of precision
@@ -46,17 +46,20 @@ function test_condition_h(nlp, solver, p, Π, flags, k) # p : current level of p
       end
       break
     end
-    p.verb == true && @info "condition on h not reached at iteration $k with precision $(Π[ph]) on h and $(Π[ps]) on s. Increasing precision : "
+    p.verb == true && @info "condition on h not reached at iteration $k with precision $(Π[p.ph]) on h and $(Π[p.ps]) on s. Increasing precision : "
     if Π[p.ph] == Π[end] 
       @info " └──> maximum precision already reached on h. Trying to increase precision on s."
-      h = recompute_prox!(nlp, solver, p, k, Π)
+      recompute_prox!(nlp, solver, p, k, Π)
     else
       p.ph+=1
-      solver.hk[p.ph] = h(solver.xk[p.ph])
+      solver.hk[p.ph] = solver.h(solver.xk[p.ph])
+      for i=1:length(Π)
+        solver.hk[i] = solver.hk[p.ph]
+      end
     end
-    p.verb == true && @info " └──> current precision on s is now $(Π[ps]) and h is $(Π[ph])"
+    p.verb == true && @info " └──> current precision on s is now $(Π[p.ps]) and h is $(Π[p.ph])"
   end
-  return h, flags
+  return flags
 end
 
 
@@ -69,16 +72,16 @@ function test_condition_∇f(nlp, solver, p, Π, flags, k)
       end
       break
     end
-    p.verb == true && @info "condition on ∇f not reached at iteration $k with precision $(Π[pg]) on ∇f and $(Π[ps]) on s. Increasing precision : "
+    p.verb == true && @info "condition on ∇f not reached at iteration $k with precision $(Π[p.pg]) on ∇f and $(Π[p.ps]) on s. Increasing precision : "
     if Π[p.pg] == Π[end] 
       p.verb == true && @info " └──> maximum precision already reached on ∇f. Trying to increase precision on s."
-      h = recompute_prox!(nlp, solver, p, k, Π)
+      recompute_prox!(nlp, solver, p, k, Π)
     else
       recompute_grad!(nlp, solver, p, k, Π)
     end
-    p.verb == true && @info " └──> current precision on s is now $(Π[ps]) and ∇f is $(Π[pg])"
+    p.verb == true && @info " └──> current precision on s is now $(Π[p.ps]) and ∇f is $(Π[p.pg])"
   end
-  return h, flags
+  return flags
 end
 
 
@@ -93,27 +96,26 @@ function test_assumption_6(nlp, solver, p, Π, flags, k, ξ)
       break
     end
 
-    p.verb == true && @info "condition on Assumption 6 not reached at iteration $k with precision $(Π[ps]) on s and $(Π[ph]) on h. Increasing precision : "
+    p.verb == true && @info "condition on Assumption 6 not reached at iteration $k with precision $(Π[p.ps]) on s and $(Π[p.ph]) on h. Increasing precision : "
     if Π[p.ph] == Π[end]
       p.verb == true && @info " └──> maximum precision already reached on h to satisfy Assumption 6. Trying to increase precision on s."
 
-      h = recompute_prox!(nlp, solver, p, k, Π)
+      recompute_prox!(nlp, solver, p, k, Π)
 
-      ψ = shifted(h, solver.xk[p.ph])
       φk(d) = dot(solver.gfk[p.pg], d)
-      mk(d) = φk(d) + ψ(d) # FP format : highest between φk and ψ
+      mk(d) = φk(d) + solver.ψ(d) # FP format : highest between φk and ψ
 
       mks = mk(solver.sk[p.ps])
       ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps()
 
     else
       p.ph+=1
-      slver.hk[p.ph] = h(solver.xk[p.ph])
+      solver.hk[p.ph] = solver.h(solver.xk[p.ph])
       ξ = hk[ph] - mks + max(1, abs(hk[ph])) * 10 * eps()
     end
-    verb == true && @info " └──> current precision on h is now s is $(Π[ps]) and h is $(Π[ph])"
+    p.verb == true && @info " └──> current precision on h is now s is $(Π[p.ps]) and h is $(Π[p.ph])"
   end
-  return h, ξ, flags
+  return ξ, flags
 end
 
 
@@ -126,41 +128,42 @@ function recompute_grad!(nlp, solver, p, Π, k) # p : current level of precision
   p.pg+=1
   @info "recomputing gradient at iteration $k with precision $(Π[p.pg])"
   grad!(nlp, solver.gfk[p.pg], solver.xk[p.pg])
-  for i=1:len(Π)
+  for i=1:length(Π)
     solver.gfk[i] .= solver.gfk[p.pg]
   end
 
-  p.ν = Π[p.pg](ν) # toujours en la précision du gradient
-  @. solver.mν∇fk = -p.ν * solver.gfk[p.pg]
+  for i=1:length(Π)
+    solver.mν∇fk[i] .= -Π[i].(p.ν) * solver.gfk[i]
+  end  
   return
 end
 
 function recompute_prox!(nlp, solver, p, k, Π) 
   # first, recompute_grad because we need the updated version of solver.mν∇fk to compute the proximal operator 
+  
   recompute_grad!(nlp, solver, p, Π, k)
 
   # then, recompute proximal operator
   if Π[p.ps] == Π[end]
     @warn "maximum precision already reached on s when recomputing prox at iteration $k."
-    return h
+    solver.h = NormL1(Π[p.ps](1.0))
+    solver.ψ = shifted(solver.h, solver.xk[p.ps])
+    return 
   end
 
   p.ps+=1
 
-  h = NormL1(Π[p.ps](1.0))
-  hxk = h(solver.xk[p.ps]) #TODO add selected
-  for i=1:P 
+  solver.h = NormL1(Π[p.ps](1.0))
+  hxk = solver.h(solver.xk[p.ps]) #TODO add selected # !!! casté en la précision la + haute entre ps et ph
+  for i=1:length(Π)
     solver.hk[i] = Π[i].(hxk)
   end
-  ψ = shifted(h, solver.xk[p.ps])
+  solver.ψ = shifted(solver.h, solver.xk[p.ps])
 
-  # solver.mν∇fk = Π[p.ps].(solver.mν∇fk) # pourquoi le cast? 
-  p.ν = Π[p.ps].(p.ν)
-
-  prox!(solver.sk[p.ps], ψ, solver.mν∇fk, p.ν)
-  for i=1:len(Π)
+  prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps].(p.ν)) # on recalcule le prox en la précision de ps. 
+  for i=1:length(Π)
     solver.sk[i] .= solver.sk[p.ps]
   end
 
-  return h
+  return
 end

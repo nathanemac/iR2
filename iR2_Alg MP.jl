@@ -1,6 +1,5 @@
 
 mutable struct MPR2Solver{R, S} <: AbstractOptimizationSolver
-  x  # variable du point courant
   xk # conteneur des x en les 3 précisions #TODO : tout typer
   ∇fk
   mν∇fk
@@ -19,6 +18,8 @@ mutable struct MPR2Solver{R, S} <: AbstractOptimizationSolver
   Hobj_hist::Vector{R}
   Complex_hist::Vector{Int}
   p_hist::Vector{Vector{Int64}}
+  h
+  ψ
 end
 
 mutable struct iR2RegParams
@@ -38,7 +39,7 @@ mutable struct iR2RegParams
   ν
 end
 
-function iR2RegParams(Π::Vector{DataType}; verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=zeros(Bool, 3), κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., σk=1., ν=1.)
+function iR2RegParams(Π::Vector{DataType}; verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=zeros(Bool, 3), κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., σk=1., ν=0.000740095979741405)
   return iR2RegParams(1, 1, 1, 1, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, σk, ν)
 end
 
@@ -50,7 +51,6 @@ function MPR2Solver(
   u_bound::S;
 ) where {R <: Real, S <: AbstractVector{R}}
   maxIter = options.maxIter
-  x = similar(x0)
   Π = params.Π
   xk = [Vector{R}(undef, length(x0)) for R in Π]
   ∇fk = similar(x0)
@@ -58,7 +58,7 @@ function MPR2Solver(
   fk = [zero(R) for R in Π]
   hk = [zero(R) for R in Π]
   sk = [Vector{R}(undef, length(x0)) for R in Π]
-  mν∇fk = similar(x0)
+  mν∇fk = [Vector{R}(undef, length(x0)) for R in Π]
   xkn = similar(x0)
   s = zero(x0)
   has_bnds = any(l_bound .!= R(-Inf)) || any(u_bound .!= R(Inf))
@@ -74,8 +74,9 @@ function MPR2Solver(
   Hobj_hist = zeros(R, maxIter)
   Complex_hist = zeros(Int, maxIter)
   p_hist = [zeros(Int, 4) for _ in 1:maxIter]
+  h = nothing
+  ψ = nothing
   return MPR2Solver(
-    x,
     xk,
     ∇fk,
     mν∇fk,
@@ -94,6 +95,8 @@ function MPR2Solver(
     Hobj_hist,
     Complex_hist,
     p_hist,
+    h, 
+    ψ
   )
 end
 
@@ -162,9 +165,13 @@ function MPR2(
   
   ξ = outdict[:ξ]
   stats = GenericExecutionStats(nlp)
+  stats.solution = eltype(x).(stats.solution)
+  stats.objective = eltype(x).(stats.objective)
+  stats.primal_feas = eltype(x).(stats.primal_feas)
+  stats.dual_feas = eltype(x).(stats.dual_feas)
   set_status!(stats, outdict[:status])
   set_solution!(stats, x)
-  set_objective!(stats, typeof(nlp.meta.x0[1]).(outdict[:fk]) + typeof(nlp.meta.x0[1]).(outdict[:hk]))
+  set_objective!(stats, typeof(nlp.meta.x0[1]).(outdict[:fk]) + typeof(nlp.meta.x0[1]).(outdict[:hk])) #TODO : change this
   set_residuals!(stats, zero(eltype(x)), ξ)
   set_iter!(stats, k)
   set_time!(stats, outdict[:elapsed_time])
@@ -205,7 +212,7 @@ function MPR2(
     :p_hist => solver.p_hist[1:k],
   )
   
-  return solver.x, k, outdict
+  return solver.xk[end], k, outdict
 end
 
 function MPR2(
@@ -237,7 +244,7 @@ function MPR2(
     :p_hist => solver.p_hist[1:k],
   )
 
-  return solver.x, k, outdict
+  return solver.xk[end], k, outdict
 end
   
 
@@ -263,12 +270,14 @@ function MPR2!(
   σmin = options.σmin
   η1 = options.η1
   η2 = options.η2
-  ν = options.ν
+  p.ν = options.ν
   γ = options.γ
 
   if p.activate_mp
     test_κ(p.κs, p.κf, p.κ∇, p.κh, η1, η2)
   end
+
+  params.pf, params.pg, params.ph, params.ps = 1, 1, 1, 1
 
   Π = p.Π
   P = length(Π)
@@ -299,12 +308,14 @@ function MPR2!(
     ptf = 1
   end
 
+  solver.h = h
+
   # initialize parameters
-  hxk = @views h(solver.xk[p.ph][selected])
+  hxk = @views solver.h(solver.xk[p.ph][selected])
   if hxk == Inf
     verbose > 0 && @info "R2: finding initial guess where nonsmooth term is finite"
-    prox!(solver.xk[p.ph][selected], h, x0, one(eltype(x0)))
-    hxk = @views h(solver.xk[p.ph][selected])
+    prox!(solver.xk[p.ph][selected], solver.h, x0, one(eltype(x0)))
+    hxk = @views solver.h(solver.xk[p.ph][selected])
     hxk < Inf || error("prox computation must be erroneous")
     verbose > 0 && @debug "R2: found point where h has value" hk
   end
@@ -320,10 +331,10 @@ function MPR2!(
     #! format: off
   end
 
-  local ξ::R
+  local ξ
   k = 0
   p.σk = max(1 / p.ν, σmin)
-  p.ν = Π[p.pg].(1 / p.σk) # !!! Under/Overflow possible here.
+  p.ν = 1 / p.σk # !!! Under/Overflow possible here.
   sqrt_ξ_νInv = one(R)
 
   fxk = f(solver.xk[p.pf])
@@ -335,8 +346,10 @@ function MPR2!(
   for i=1:P 
     solver.gfk[i] .= solver.gfk[p.pg]
   end
-
-  @. solver.mν∇fk = -Π[p.pg].(p.ν) * solver.gfk[p.pg] # en la précision du gradient
+  # peut-être moyen de fusionner les deux boucles.
+  for i=1:P
+    solver.mν∇fk[i] .= -Π[i].(p.ν) * solver.gfk[i]
+  end
 
   optimal = false
   tired = maxIter > 0 && k ≥ maxIter || elapsed_time > maxTime
@@ -355,15 +368,15 @@ function MPR2!(
     if has_bnds #TODO maybe change this 
       @. l_bound_m_x = l_bound - solver.xk[1]
       @. u_bound_m_x = u_bound - solver.xk[1]
-      ψ = shifted(h, solver.xk[1], l_bound_m_x, u_bound_m_x, selected)
+      ψ = shifted(solver.h, solver.xk[1], l_bound_m_x, u_bound_m_x, selected)
     else
-      h = NormL1(Π[p.ph](1.0)) # need to redefine h at each iteration because when shifting: MethodError: no method matching shifted(::NormL1{Float64}, ::Vector{Float16}) so the norm and the shift vector must be same FP Format. 
-      ψ = shifted(h, solver.xk[p.ph])
+      solver.h = NormL1(Π[p.ps](1.0)) # need to redefine h at each iteration because when shifting: MethodError: no method matching shifted(::NormL1{Float64}, ::Vector{Float16}) so the norm and the shift vector must be same FP Format. 
+      ψ = shifted(solver.h, solver.xk[p.ps])
     end
-    φk(d) = dot(solver.gfk[p.pg], d)
-    mk(d)::R = φk(d) + ψ(d)::R # FP format : highest between φk and ψ
+    φk(d) = dot(solver.gfk[end], d) # FP format : highest available to avoid over/underflow
+    mk(d) = φk(d) + ψ(d) 
 
-    prox!(solver.sk[p.ps], ψ, solver.mν∇fk, p.ν)
+    prox!(solver.sk[p.ps], ψ, solver.mν∇fk[p.ps], Π[p.ps].(p.ν)) # # on calcule le prox en la précision de ps. 
 
     Complex_hist[k] += 1
     for i=1:P
@@ -371,17 +384,17 @@ function MPR2!(
     end
 
     if p.activate_mp 
-       h, flags = test_condition_f(nlp, solver, p, Π, flags, k)
-       h, flags = test_condition_h(nlp, solver, p, Π, flags, k)
-       h, flags = test_condition_∇f(nlp, solver, p, Π, flags, k)
+       flags = test_condition_f(nlp, solver, p, Π, flags, k)
+       flags = test_condition_h(nlp, solver, p, Π, flags, k)
+       flags = test_condition_∇f(nlp, solver, p, Π, flags, k)
     end
 
     mks = mk(solver.sk[p.ps]) # casté en la précision la + haute entre celle de mk et ps
     ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps() # casté en la précision la plus haute entre ph et ps. 
-
-    if p.activate_mp
-      h, ξ, flags = test_assumption_6(nlp, solver, p, Π, flags, k, ξ)
-    end
+    #if p.activate_mp
+    #  ξ, flags = test_assumption_6(nlp, solver, p, Π, flags, k, ξ)
+    #end
+    
     #-------------------------------------------------------------------------------------------
     # -- à partir de là, toutes les conditions de convergence sont garanties à l'itération k. --
     #-------------------------------------------------------------------------------------------
@@ -399,13 +412,13 @@ function MPR2!(
       end
     end
 
-    if (ξ < 0 && sqrt_ξ_νInv > neg_tol) 
+    if (ξ < 0 && sqrt_ξ_νInv > 1e6*neg_tol)  # ajouté 10* car + d'imprécisions numériques car MP
       error("R2: prox-gradient step should produce a decrease but ξ = $(ξ)")
     end
 
     solver.xkn .= solver.xk[end] .+ solver.sk[end] # choix de le mettre en la précision la + haute, mais on pourrait le mettre en la précision de ps
     fkn = f(solver.xkn)
-    hkn = @views h(solver.xkn[selected]) # fkn et hkn en la précision de xkn = celle de ps 
+    hkn = @views solver.h(solver.xkn[selected]) # fkn et hkn en la précision de xkn = celle de ps 
     hkn == -Inf && error("nonsmooth term is not proper")
 
     Δobj = (solver.fk[p.pf] + solver.hk[p.ph]) - (fkn + hkn) + max(1, abs(solver.fk[end] + solver.hk[end])) * 10 * eps() #TODO change eps() to eps(Π[p]), but which one? 
@@ -419,7 +432,7 @@ function MPR2!(
     end
 
     if η2 ≤ ρk < Inf
-      σk = max(σk / γ, σmin)
+      p.σk = max(p.σk / γ, σmin)
     end
 
     if η1 ≤ ρk < Inf
@@ -453,12 +466,12 @@ function MPR2!(
       p.σk = p.σk * γ
     end
 
-    p.ν = Π[p.ps](1 / p.σk) # !!! Under/Overflow possible here.
-    println("ν = ", p.ν)
-    println("ξ = ", ξ)
+    p.ν = 1 / p.σk # !!! Under/Overflow possible here.
     tired = maxIter > 0 && k ≥ maxIter
     if !tired
-      @. solver.mν∇fk = -Π[p.pg].(p.ν) * solver.gfk[p.pg] # en la précision du gradient
+      for i=1:P
+        solver.mν∇fk[i] .= -Π[i].(p.ν) * solver.gfk[i]
+      end
     end
   end
 
@@ -481,5 +494,5 @@ function MPR2!(
   else
     :exception
   end
-  return k, status, solver.fk[p.pf], solver.hk[p.ph], sqrt_ξ_νInv, [p.pf, p.pg, p.ph, p.ps]
+  return k, status, solver.fk[end], solver.hk[end], sqrt_ξ_νInv, [p.pf, p.pg, p.ph, p.ps]
 end
