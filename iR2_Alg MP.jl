@@ -39,7 +39,7 @@ mutable struct iR2RegParams
   ν
 end
 
-function iR2RegParams(Π::Vector{DataType}; verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=zeros(Bool, 3), κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., σk=1., ν=0.000740095979741405)
+function iR2RegParams(Π::Vector{DataType}; verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., σk=1., ν=0.000740095979741405)
   return iR2RegParams(1, 1, 1, 1, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, σk, ν)
 end
 
@@ -172,7 +172,7 @@ function MPR2(
   set_status!(stats, outdict[:status])
   set_solution!(stats, x)
   set_objective!(stats, typeof(nlp.meta.x0[1]).(outdict[:fk]) + typeof(nlp.meta.x0[1]).(outdict[:hk])) #TODO : change this
-  set_residuals!(stats, zero(eltype(x)), ξ)
+  set_residuals!(stats, typeof(nlp.meta.x0[1]).(zero(eltype(x))), typeof(nlp.meta.x0[1]).(ξ))
   set_iter!(stats, k)
   set_time!(stats, outdict[:elapsed_time])
   set_solver_specific!(stats, :Fhist, outdict[:Fhist])
@@ -354,8 +354,6 @@ function MPR2!(
   optimal = false
   tired = maxIter > 0 && k ≥ maxIter || elapsed_time > maxTime
 
-  flags=[false, false, false] # pour contrôler l'affichage dans les fonctions de test de précision.
-
   while !(optimal || tired)
     k = k + 1
     elapsed_time = time() - start_time
@@ -384,17 +382,17 @@ function MPR2!(
     end
 
     if p.activate_mp 
-       flags = test_condition_f(nlp, solver, p, Π, flags, k)
-       flags = test_condition_h(nlp, solver, p, Π, flags, k)
-       flags = test_condition_∇f(nlp, solver, p, Π, flags, k)
+      test_condition_f(nlp, solver, p, Π, k)
+      test_condition_h(nlp, solver, p, Π, k)
+      test_condition_∇f(nlp, solver, p, Π, k)
     end
 
     mks = mk(solver.sk[p.ps]) # casté en la précision la + haute entre celle de mk et ps
     ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps() # casté en la précision la plus haute entre ph et ps. 
-    #if p.activate_mp
-    #  ξ, flags = test_assumption_6(nlp, solver, p, Π, flags, k, ξ)
-    #end
-    
+    if p.activate_mp
+      ξ = test_assumption_6(nlp, solver, p, Π, k, ξ)
+    end
+
     #-------------------------------------------------------------------------------------------
     # -- à partir de là, toutes les conditions de convergence sont garanties à l'itération k. --
     #-------------------------------------------------------------------------------------------
@@ -412,8 +410,11 @@ function MPR2!(
       end
     end
 
-    if (ξ < 0 && sqrt_ξ_νInv > 1e6*neg_tol)  # ajouté 10* car + d'imprécisions numériques car MP
-      error("R2: prox-gradient step should produce a decrease but ξ = $(ξ)")
+    if (ξ < 0 && sqrt_ξ_νInv > 1e4*neg_tol)
+      status = :exception 
+      @info @sprintf "%6d %8.1e %8.1e %8s %8s %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k solver.fk[p.pf] solver.hk[p.ph] "" "" p.σk norm(solver.xk[end]) norm(solver.xk[end]) "" Π[p.pf] Π[p.pg] Π[p.ph] Π[p.ps]
+      @warn "R2: prox-gradient step should produce a decrease but ξ = $(ξ). Early stopping iR2-Reg."
+      return k, status, solver.fk[end], solver.hk[end], sqrt_ξ_νInv, [p.pf, p.pg, p.ph, p.ps]
     end
 
     solver.xkn .= solver.xk[end] .+ solver.sk[end] # choix de le mettre en la précision la + haute, mais on pourrait le mettre en la précision de ps
@@ -421,7 +422,7 @@ function MPR2!(
     hkn = @views solver.h(solver.xkn[selected]) # fkn et hkn en la précision de xkn = celle de ps 
     hkn == -Inf && error("nonsmooth term is not proper")
 
-    Δobj = (solver.fk[p.pf] + solver.hk[p.ph]) - (fkn + hkn) + max(1, abs(solver.fk[end] + solver.hk[end])) * 10 * eps() #TODO change eps() to eps(Π[p]), but which one? 
+    Δobj = (solver.fk[end] + solver.hk[end]) - (fkn + hkn) + max(1, abs(solver.fk[end] + solver.hk[end])) * 10 * eps() #TODO change eps() to eps(Π[p]), but which one? 
     ρk = Δobj / ξ # En la précision la + haute des 2
 
     if (verbose > 0) && (k % ptf == 0)
