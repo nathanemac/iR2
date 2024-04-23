@@ -346,6 +346,7 @@ function MPR2!(
   for i=1:P 
     solver.gfk[i] .= solver.gfk[p.pg]
   end
+
   # peut-être moyen de fusionner les deux boucles.
   for i=1:P
     solver.mν∇fk[i] .= -Π[i].(p.ν) * solver.gfk[i]
@@ -366,15 +367,15 @@ function MPR2!(
     if has_bnds #TODO maybe change this 
       @. l_bound_m_x = l_bound - solver.xk[1]
       @. u_bound_m_x = u_bound - solver.xk[1]
-      ψ = shifted(solver.h, solver.xk[1], l_bound_m_x, u_bound_m_x, selected)
+      solver.ψ = shifted(solver.h, solver.xk[1], l_bound_m_x, u_bound_m_x, selected)
     else
       solver.h = NormL1(Π[p.ps](1.0)) # need to redefine h at each iteration because when shifting: MethodError: no method matching shifted(::NormL1{Float64}, ::Vector{Float16}) so the norm and the shift vector must be same FP Format. 
-      ψ = shifted(solver.h, solver.xk[p.ps])
+      solver.ψ = shifted(solver.h, solver.xk[p.ps])
     end
     φk(d) = dot(solver.gfk[end], d) # FP format : highest available to avoid over/underflow
-    mk(d) = φk(d) + ψ(d) 
+    mk(d) = φk(d) + solver.ψ(d) 
 
-    prox!(solver.sk[p.ps], ψ, solver.mν∇fk[p.ps], Π[p.ps].(p.ν)) # # on calcule le prox en la précision de ps. 
+    prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps].(p.ν)) # pour l'instant, on calcule le prox en ps. 
 
     Complex_hist[k] += 1
     for i=1:P
@@ -444,7 +445,7 @@ function MPR2!(
       if has_bnds #TODO maybe change this
         @. l_bound_m_x = l_bound - xk[1]
         @. u_bound_m_x = u_bound - xk[1]
-        set_bounds!(ψ, l_bound_m_x, u_bound_m_x)
+        set_bounds!(solver.ψ, l_bound_m_x, u_bound_m_x)
       end
       
       for i=1:P
@@ -460,7 +461,7 @@ function MPR2!(
         solver.gfk[i] .= solver.gfk[p.pg]
       end
 
-      shift!(ψ, solver.xk[p.ph])
+      shift!(solver.ψ, solver.xk[p.ph])
     end
 
     if ρk < η1 || ρk == Inf

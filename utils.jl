@@ -109,7 +109,6 @@ function test_assumption_6(nlp, solver, p, Π, k, ξ)
       ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps()
 
       sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
-      println("ξ = $ξ", " sqrt_ξ_νInv = $sqrt_ξ_νInv")
       while ξ < 0 && sqrt_ξ_νInv > neg_tol && p.ps < length(Π)
         @info " └──> R2: prox-gradient step should produce a decrease but ξ = $(ξ). Increasing precision on s."
         recompute_prox!(nlp, solver, p, k, Π)
@@ -145,7 +144,6 @@ function test_assumption_6(nlp, solver, p, Π, k, ξ)
     p.verb == true && @info " └──> current precision on s is $(Π[p.ps]) and h is $(Π[p.ph])"
   end
   sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
-  println("ξ = $ξ", " sqrt_ξ_νInv = $sqrt_ξ_νInv")
   return ξ
 end
 
@@ -171,7 +169,6 @@ end
 
 function recompute_prox!(nlp, solver, p, k, Π) 
   # first, recompute_grad because we need the updated version of solver.mν∇fk to compute the proximal operator 
-  
   recompute_grad!(nlp, solver, p, k, Π)
 
   # then, recompute proximal operator
