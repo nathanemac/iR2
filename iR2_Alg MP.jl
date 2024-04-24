@@ -53,14 +53,14 @@ function MPR2Solver(
   maxIter = options.maxIter
   Π = params.Π
   xk = [Vector{R}(undef, length(x0)) for R in Π]
-  ∇fk = similar(x0)
+  ∇fk = similar(x0) # inutile
   gfk = [Vector{R}(undef, length(x0)) for R in Π]
   fk = [zero(R) for R in Π]
   hk = [zero(R) for R in Π]
   sk = [Vector{R}(undef, length(x0)) for R in Π]
   mν∇fk = [Vector{R}(undef, length(x0)) for R in Π]
   xkn = similar(x0)
-  s = zero(x0)
+  s = zero(x0) # inutile
   has_bnds = any(l_bound .!= R(-Inf)) || any(u_bound .!= R(Inf))
   if has_bnds
     l_bound_m_x = similar(x0)

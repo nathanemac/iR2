@@ -20,7 +20,7 @@ nlp=woods(;n=100, type = Val(Float64), backend=:generic)
 nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.2, -1.345], backend=:generic)
 nlp = BOX3(;n=100, backend=:generic)
 h = NormL1(1.0)
-options = ROSolverOptions(verbose=1, maxIter = 10000)
+options = ROSolverOptions(verbose=3, maxIter = 100)
 
 ####################
 
@@ -51,7 +51,7 @@ stats_sans_mp = bmark_solvers(
 
 
 ## avec MP ##
-problems_mp = (eval(Meta.parse(problem))(;  type = Val(Float16), backend = :generic) for problem ∈ OptimizationProblems.meta[!, :name])
+problems_mp = (eval(Meta.parse(problem))(;backend = :generic) for problem ∈ OptimizationProblems.meta[!, :name])
 params_mp = iR2RegParams([Float16, Float32, Float64], verb=true, activate_mp=true)
 
 solvers_avec_mp = Dict(
