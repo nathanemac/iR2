@@ -1,5 +1,5 @@
 
-mutable struct MPR2Solver{R, S} <: AbstractOptimizationSolver
+mutable struct iR2Solver{R, S} <: AbstractOptimizationSolver
   xk # conteneur des x en les 3 précisions #TODO : tout typer
   ∇fk
   mν∇fk
@@ -18,6 +18,7 @@ mutable struct MPR2Solver{R, S} <: AbstractOptimizationSolver
   Hobj_hist::Vector{R}
   Complex_hist::Vector{Int}
   p_hist::Vector{Vector{Int64}}
+  special_counters::Dict{Symbol, Vector{Int}}
   h
   ψ
 end
@@ -43,7 +44,7 @@ function iR2RegParams(Π::Vector{DataType}; verb::Bool=false, activate_mp::Bool=
   return iR2RegParams(1, 1, 1, 1, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, σk, ν)
 end
 
-function MPR2Solver(
+function iR2Solver(
   x0::S,
   options::ROSolverOptions,
   params::iR2RegParams,
@@ -74,9 +75,10 @@ function MPR2Solver(
   Hobj_hist = zeros(R, maxIter)
   Complex_hist = zeros(Int, maxIter)
   p_hist = [zeros(Int, 4) for _ in 1:maxIter]
+  special_counters = Dict(:f => zeros(Int, length(Π)), :h => zeros(Int, length(Π)), :∇f => zeros(Int, length(Π)), :prox => zeros(Int, length(Π)))
   h = nothing
   ψ = nothing
-  return MPR2Solver(
+  return iR2Solver(
     xk,
     ∇fk,
     mν∇fk,
@@ -95,6 +97,7 @@ function MPR2Solver(
     Hobj_hist,
     Complex_hist,
     p_hist,
+    special_counters,
     h, 
     ψ
   )
@@ -102,8 +105,8 @@ end
 
 
 """
-    MPR2(nlp, h, options)
-    MPR2(f, ∇f!, h, options, x0)
+    iR2(nlp, h, options)
+    iR2(f, ∇f!, h, options, x0)
 
 A first-order quadratic regularization method for the problem
 
@@ -146,14 +149,14 @@ In the second form, instead of `nlp`, the user may pass in
 * `Complex_hist`: an array with the history of number of inner iterations.
 """
 
-function MPR2(
+function iR2(
   nlp::AbstractNLPModel, 
   args...; 
   kwargs...
 )
   kwargs_dict = Dict(kwargs...)
   x0 = pop!(kwargs_dict, :x0, nlp.meta.x0)
-    x, k, outdict = MPR2(
+    x, k, outdict = iR2(
     t -> obj(nlp, t),
     (g, t) -> grad!(nlp, t, g),
     args...,
@@ -179,12 +182,13 @@ function MPR2(
   set_solver_specific!(stats, :Hhist, outdict[:Hhist])
   set_solver_specific!(stats, :SubsolverCounter, outdict[:Chist])
   set_solver_specific!(stats, :p_hist, outdict[:p_hist])
+  set_solver_specific!(stats, :special_counters, outdict[:special_counters])
   
   return stats
 end
 
 # method without bounds
-function MPR2(
+function iR2(
   f::F,
   ∇f!::G,
   h::H,
@@ -196,8 +200,8 @@ function MPR2(
 ) where {F <: Function, G <: Function, H, R <: Real, S <: Real}
   start_time = time()
   elapsed_time = 0.0
-  solver = MPR2Solver(x0, options, params, similar(x0, 0), similar(x0, 0))
-  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, x0; selected=selected, params=params,)
+  solver = iR2Solver(x0, options, params, similar(x0, 0), similar(x0, 0))
+  k, status, fk, hk, ξ = iR2!(solver, f, ∇f!, h, options, x0; selected=selected, params=params,)
   elapsed_time = time() - start_time
   
   outdict = Dict(
@@ -210,12 +214,13 @@ function MPR2(
     :ξ => ξ,
     :elapsed_time => elapsed_time,
     :p_hist => solver.p_hist[1:k],
+    :special_counters => solver.special_counters
   )
   
   return solver.xk[end], k, outdict
 end
 
-function MPR2(
+function iR2(
   f::F,
   ∇f!::G,
   h::H,
@@ -229,8 +234,8 @@ function MPR2(
 ) where {F <: Function, G <: Function, H, R <: Real, S <: Real}
   start_time = time()
   elapsed_time = 0.0
-  solver = MPR2Solver(x0, options, params, l_bound, u_bound,)
-  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, params, x0; selected=selected)
+  solver = iR2Solver(x0, options, params, l_bound, u_bound,)
+  k, status, fk, hk, ξ = iR2!(solver, f, ∇f!, h, options, params, x0; selected=selected)
   elapsed_time = time() - start_time
   outdict = Dict(
     :Fhist => solver.Fobj_hist[1:k],
@@ -242,6 +247,7 @@ function MPR2(
     :ξ => ξ,
     :elapsed_time => elapsed_time,
     :p_hist => solver.p_hist[1:k],
+    :special_counters => solver.special_counters
   )
 
   return solver.xk[end], k, outdict
@@ -249,8 +255,8 @@ end
   
 
 
-function MPR2!(
-  solver::MPR2Solver{R, S},
+function iR2!(
+  solver::iR2Solver{R, S},
   f::F,
   ∇f!::G,
   h::H,
@@ -275,9 +281,7 @@ function MPR2!(
 
   if p.activate_mp
     test_κ(p.κs, p.κf, p.κ∇, p.κh, η1, η2)
-  end
-
-  params.pf, params.pg, params.ph, params.ps = 1, 1, 1, 1
+  end  
 
   Π = p.Π
   P = length(Π)
@@ -309,15 +313,18 @@ function MPR2!(
   end
 
   solver.h = h
-
   # initialize parameters
   hxk = @views solver.h(solver.xk[p.ph][selected])
+  solver.special_counters[:h][p.ph] += 1
   if hxk == Inf
     verbose > 0 && @info "R2: finding initial guess where nonsmooth term is finite"
     prox!(solver.xk[p.ph][selected], solver.h, x0, one(eltype(x0)))
     hxk = @views solver.h(solver.xk[p.ph][selected])
-    hxk < Inf || error("prox computation must be erroneous")
-    verbose > 0 && @debug "R2: found point where h has value" hk
+    if hxk == Inf
+      status = :exception 
+      @warn "prox computation must be erroneous. Early stopping iR2-Reg."
+      return 1, status, solver.fk[end], solver.hk[end], Inf, [p.pf, p.pg, p.ph, p.ps]
+    end
   end
   hxk == -Inf && error("nonsmooth term is not proper")
 
@@ -338,11 +345,13 @@ function MPR2!(
   sqrt_ξ_νInv = one(R)
 
   fxk = f(solver.xk[p.pf])
+  solver.special_counters[:f][p.pf] += 1
   for i=1:P
     solver.fk[i] = Π[i].(fxk)
   end
 
   ∇f!(solver.gfk[p.pg], solver.xk[p.pg])
+  solver.special_counters[:∇f][p.pg] += 1
   for i=1:P 
     solver.gfk[i] .= solver.gfk[p.pg]
   end
@@ -376,6 +385,7 @@ function MPR2!(
     mk(d) = φk(d) + solver.ψ(d) 
 
     prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps].(p.ν)) # pour l'instant, on calcule le prox en ps. 
+    solver.special_counters[:prox][p.ps] += 1
 
     Complex_hist[k] += 1
     for i=1:P
@@ -389,6 +399,8 @@ function MPR2!(
     end
 
     mks = mk(solver.sk[p.ps]) # casté en la précision la + haute entre celle de mk et ps
+    solver.special_counters[:h][p.ph] += 1
+
     ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps() # casté en la précision la plus haute entre ph et ps. 
     if p.activate_mp
       ξ = test_assumption_6(nlp, solver, p, Π, k, ξ)
@@ -420,7 +432,9 @@ function MPR2!(
 
     solver.xkn .= solver.xk[end] .+ solver.sk[end] # choix de le mettre en la précision la + haute, mais on pourrait le mettre en la précision de ps
     fkn = f(solver.xkn)
+    solver.special_counters[:f][end] += 1
     hkn = @views solver.h(solver.xkn[selected]) # fkn et hkn en la précision de xkn = celle de ps 
+    solver.special_counters[:h][p.ph] += 1
     hkn == -Inf && error("nonsmooth term is not proper")
 
     Δobj = (solver.fk[end] + solver.hk[end]) - (fkn + hkn) + max(1, abs(solver.fk[end] + solver.hk[end])) * 10 * eps() #TODO change eps() to eps(Π[p]), but which one? 
@@ -457,6 +471,7 @@ function MPR2!(
       end
 
       ∇f!(solver.gfk[p.pg], solver.xk[p.pg])
+      solver.special_counters[:∇f][p.pg] += 1
       for i=1:P 
         solver.gfk[i] .= solver.gfk[p.pg]
       end
