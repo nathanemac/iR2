@@ -88,7 +88,7 @@ end
 
 
 # check assumption 6
-function test_assumption_6(nlp, solver, p, Π, k, ξ)
+function test_assumption_6(nlp, solver, options, p, Π, k, ξ)
   while ξ < 1/2*p.κs*p.σk*norm(solver.sk[p.ps])^2 
     if (Π[p.ps] == Π[end]) && (Π[p.ph] == Π[end])
       if (p.flags[2] == false)
@@ -109,7 +109,7 @@ function test_assumption_6(nlp, solver, p, Π, k, ξ)
       ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps()
 
       sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
-      while ξ < 0 && sqrt_ξ_νInv > neg_tol && p.ps < length(Π)
+      while ξ < 0 && sqrt_ξ_νInv > options.neg_tol && p.ps < length(Π)
         @info " └──> R2: prox-gradient step should produce a decrease but ξ = $(ξ). Increasing precision on s."
         recompute_prox!(nlp, solver, p, k, Π)
         φk(d) = dot(solver.gfk[end], d)
@@ -158,7 +158,7 @@ function recompute_grad!(nlp, solver, p, k, Π) # p : current level of precision
     return 
   end
   p.pg+=1
-  @info "recomputing gradient at iteration $k with precision $(Π[p.pg])"
+  p.verb==true && @info "recomputing gradient at iteration $k with precision $(Π[p.pg])"
   grad!(nlp, solver.xk[p.pg], solver.gfk[p.pg])
   solver.special_counters[:∇f][p.pg] += 1
   for i=1:length(Π)

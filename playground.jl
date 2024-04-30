@@ -32,7 +32,6 @@ my_res = iR2(nlp, h, options, params) # launches vanilla R2-Reg (one might add v
 ####################
 # Benchmark : 
 using SolverBenchmark
-using CS
 using DataFrames
 options = ROSolverOptions(verbose=0)
 h = NormL1(1.0)

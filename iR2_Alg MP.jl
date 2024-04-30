@@ -39,7 +39,7 @@ mutable struct iR2RegParams
   ν::Real
 end
 
-function iR2RegParams(Π::Vector{DataType}; verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1., σk=1., ν=0.000740095979741405)
+function iR2RegParams(Π::Vector{DataType}; verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1e-4, σk=1., ν=0.000740095979741405)
   return iR2RegParams(1, 1, 1, 1, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, κξ, σk, ν)
 end
 
@@ -390,7 +390,7 @@ function iR2!(
 
     ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps() # casté en la précision la plus haute entre ph et ps. 
     if p.activate_mp
-      ξ = test_assumption_6(nlp, solver, p, Π, k, ξ)
+      ξ = test_assumption_6(nlp, solver, options, p, Π, k, ξ)
     end
 
     #-------------------------------------------------------------------------------------------
