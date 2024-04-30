@@ -20,7 +20,7 @@ nlp=woods(;n=100, type = Val(Float64), backend=:generic)
 nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.2, -1.345], backend=:generic)
 nlp = curly30(;backend=:generic)
 h = NormL1(1.0)
-options = ROSolverOptions(verbose=3, maxIter = 1000)
+options = ROSolverOptions(verbose=3, maxIter = 100)
 
 ####################
 

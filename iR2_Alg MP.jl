@@ -1,14 +1,12 @@
 
-mutable struct iR2Solver{R, S} <: AbstractOptimizationSolver
-  xk # conteneur des x en les 3 précisions #TODO : tout typer
-  ∇fk
-  mν∇fk
-  gfk
-  fk
-  hk
-  sk
+mutable struct iR2Solver{R<:Real, S<:Vector} <: AbstractOptimizationSolver
+  xk::Vector{S}
+  mν∇fk::Vector{S}
+  gfk::Vector{S}
+  fk::S
+  hk::S
+  sk::Vector{S}
   xkn::S
-  s::S
   has_bnds::Bool
   l_bound::S
   u_bound::S
@@ -32,16 +30,17 @@ mutable struct iR2RegParams
   verb::Bool
   activate_mp::Bool
   flags::Vector{Bool}
-  κf
-  κh
-  κ∇
-  κs
-  σk
-  ν
+  κf::Real
+  κh::Real
+  κ∇::Real
+  κs::Real
+  κξ::Real
+  σk::Real
+  ν::Real
 end
 
-function iR2RegParams(Π::Vector{DataType}; verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., σk=1., ν=0.000740095979741405)
-  return iR2RegParams(1, 1, 1, 1, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, σk, ν)
+function iR2RegParams(Π::Vector{DataType}; verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1., σk=1., ν=0.000740095979741405)
+  return iR2RegParams(1, 1, 1, 1, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, κξ, σk, ν)
 end
 
 function iR2Solver(
@@ -54,14 +53,12 @@ function iR2Solver(
   maxIter = options.maxIter
   Π = params.Π
   xk = [Vector{R}(undef, length(x0)) for R in Π]
-  ∇fk = similar(x0) # inutile
   gfk = [Vector{R}(undef, length(x0)) for R in Π]
   fk = [zero(R) for R in Π]
   hk = [zero(R) for R in Π]
   sk = [Vector{R}(undef, length(x0)) for R in Π]
   mν∇fk = [Vector{R}(undef, length(x0)) for R in Π]
   xkn = similar(x0)
-  s = zero(x0) # inutile
   has_bnds = any(l_bound .!= R(-Inf)) || any(u_bound .!= R(Inf))
   if has_bnds
     l_bound_m_x = similar(x0)
@@ -80,14 +77,12 @@ function iR2Solver(
   ψ = nothing
   return iR2Solver(
     xk,
-    ∇fk,
     mν∇fk,
     gfk,
     fk, 
     hk, 
     sk,
     xkn,
-    s,
     has_bnds,
     l_bound,
     u_bound,
@@ -252,8 +247,6 @@ function iR2(
 
   return solver.xk[end], k, outdict
 end
-  
-
 
 function iR2!(
   solver::iR2Solver{R, S},
@@ -289,7 +282,6 @@ function iR2!(
   for i=1:P 
     solver.xk[i] .= x0
   end
-
   has_bnds = solver.has_bnds
   if has_bnds
     l_bound = solver.l_bound
@@ -341,7 +333,7 @@ function iR2!(
   local ξ
   k = 0
   p.σk = max(1 / p.ν, σmin)
-  p.ν = 1 / p.σk # !!! Under/Overflow possible here.
+  p.ν = 1 / p.σk
   sqrt_ξ_νInv = one(R)
 
   fxk = f(solver.xk[p.pf])
@@ -354,11 +346,7 @@ function iR2!(
   solver.special_counters[:∇f][p.pg] += 1
   for i=1:P 
     solver.gfk[i] .= solver.gfk[p.pg]
-  end
-
-  # peut-être moyen de fusionner les deux boucles.
-  for i=1:P
-    solver.mν∇fk[i] .= -Π[i].(p.ν) * solver.gfk[i]
+    solver.mν∇fk[i] .= -Π[end].(p.ν) * solver.gfk[i]
   end
 
   optimal = false
@@ -373,23 +361,23 @@ function iR2!(
     p_hist[k] = [p.pf, p.pg, p.ph, p.ps]
 
     # define model
-    if has_bnds #TODO maybe change this 
+    if has_bnds #TODO updatde this later 
       @. l_bound_m_x = l_bound - solver.xk[1]
       @. u_bound_m_x = u_bound - solver.xk[1]
       solver.ψ = shifted(solver.h, solver.xk[1], l_bound_m_x, u_bound_m_x, selected)
     else
       solver.h = NormL1(Π[p.ps](1.0)) # need to redefine h at each iteration because when shifting: MethodError: no method matching shifted(::NormL1{Float64}, ::Vector{Float16}) so the norm and the shift vector must be same FP Format. 
-      solver.ψ = shifted(solver.h, solver.xk[p.ps])
+      solver.ψ = shifted(solver.h, solver.xk[p.ps]) # therefore ψ FP format is s FP format
     end
     φk(d) = dot(solver.gfk[end], d) # FP format : highest available to avoid over/underflow
-    mk(d) = φk(d) + solver.ψ(d) 
+    mk(d) = φk(d) + solver.ψ(d)
 
-    prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps].(p.ν)) # pour l'instant, on calcule le prox en ps. 
+    prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps].(p.ν)) # on calcule le prox en le FP format de s car tous les arguments de prox!() doivent être de même FP format.
     solver.special_counters[:prox][p.ps] += 1
 
     Complex_hist[k] += 1
     for i=1:P
-      solver.sk[i] .= solver.sk[p.ps]
+      solver.sk[i] .= solver.sk[p.ps] # on a mis a jour solver.sk[p.ps] dans prox!() donc c'est celui qu'on met à jour. 
     end
 
     if p.activate_mp 
@@ -399,7 +387,6 @@ function iR2!(
     end
 
     mks = mk(solver.sk[p.ps]) # casté en la précision la + haute entre celle de mk et ps
-    solver.special_counters[:h][p.ph] += 1
 
     ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps() # casté en la précision la plus haute entre ph et ps. 
     if p.activate_mp
@@ -416,21 +403,21 @@ function iR2!(
       ϵ += ϵr * sqrt_ξ_νInv # make stopping test absolute and relative
     end
     
-    if (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ)
+    if (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol * sqrt(p.κξ)) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ * sqrt(p.κξ))
       if k > 1 # add this to avoid the case where the first iteration is optimal because of float16. 
         optimal = true
         continue
       end
     end
 
-    if (ξ < 0 && sqrt_ξ_νInv > 1e4*neg_tol)
+    if (ξ < 0 && sqrt_ξ_νInv > 1e4*neg_tol) #TODO change this 
       status = :exception 
       @info @sprintf "%6d %8.1e %8.1e %8s %8s %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k solver.fk[p.pf] solver.hk[p.ph] "" "" p.σk norm(solver.xk[end]) norm(solver.xk[end]) "" Π[p.pf] Π[p.pg] Π[p.ph] Π[p.ps]
       @warn "R2: prox-gradient step should produce a decrease but ξ = $(ξ). Early stopping iR2-Reg."
       return k, status, solver.fk[end], solver.hk[end], sqrt_ξ_νInv, [p.pf, p.pg, p.ph, p.ps]
     end
 
-    solver.xkn .= solver.xk[end] .+ solver.sk[end] # choix de le mettre en la précision la + haute, mais on pourrait le mettre en la précision de ps
+    solver.xkn .= solver.xk[end] .+ solver.sk[end] # choix de le mettre en la précision la + haute
     fkn = f(solver.xkn)
     solver.special_counters[:f][end] += 1
     hkn = @views solver.h(solver.xkn[selected]) # fkn et hkn en la précision de xkn = celle de ps 
@@ -452,8 +439,8 @@ function iR2!(
     end
 
     if η1 ≤ ρk < Inf
-      for i=1:P # on met à jour le conteneur
-        solver.xk[i] .= solver.xkn # !! vérifier que chaque élément a un FP format différent
+      for i=1:P
+        solver.xk[i] .= solver.xkn
       end
 
       if has_bnds #TODO maybe change this
@@ -464,9 +451,6 @@ function iR2!(
       
       for i=1:P
         solver.fk[i] = Π[i].(fkn)
-      end
-
-      for i=1:P
         solver.hk[i] = Π[i].(hkn)
       end
 
@@ -487,7 +471,7 @@ function iR2!(
     tired = maxIter > 0 && k ≥ maxIter
     if !tired
       for i=1:P
-        solver.mν∇fk[i] .= -Π[i].(p.ν) * solver.gfk[i]
+        solver.mν∇fk[i] .= -Π[end].(p.ν) * solver.gfk[i]
       end
     end
   end

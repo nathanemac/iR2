@@ -3,7 +3,7 @@ function test_κ(κs, κf, κ∇, κh, η1, η2)
    if 1/2*κs*(1- η2) - (2κf + κ∇) ≤ 0
      @error "Initial parameters κs, κf, κg, η2 don't respect convergence conditions."
 
-   elseif 1/2*κs*η1 - (2κf + κh) ≤ 0
+   elseif 1/2*κs*η1 - 2(κf + κh) ≤ 0
      @error "Initial parameters κs, κf, κh, η1 don't respect convergence conditions."
    end
  end
@@ -66,7 +66,7 @@ end
 
 
 function test_condition_∇f(nlp, solver, p, Π, k)
-  while norm(solver.gfk[p.pg])*(1- 1/(1 + eps(Π[p.pg]))) > p.κ∇*p.σk*norm(solver.sk[p.ps])
+  while abs(dot(solver.gfk[p.pg], solver.sk[p.ps]))*(1- 1/(1 + eps(Π[p.pg]))) > p.κ∇*p.σk*norm(solver.sk[p.ps])
     if (Π[p.pg] == Π[end]) && (Π[p.ps] == Π[end])
       if (p.flags[3] == false)
         @warn "maximum precision already reached on ∇f and s for condition on ∇f at iteration $k."
@@ -104,7 +104,7 @@ function test_assumption_6(nlp, solver, p, Π, k, ξ)
 
       recompute_prox!(nlp, solver, p, k, Π)
 
-      φk(d) = dot(solver.gfk[p.pg], d)
+      φk(d) = dot(solver.gfk[end], d)
       mks = φk(solver.sk[p.ps]) + solver.ψ(solver.sk[p.ps])
       ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps()
 
@@ -112,7 +112,7 @@ function test_assumption_6(nlp, solver, p, Π, k, ξ)
       while ξ < 0 && sqrt_ξ_νInv > neg_tol && p.ps < length(Π)
         @info " └──> R2: prox-gradient step should produce a decrease but ξ = $(ξ). Increasing precision on s."
         recompute_prox!(nlp, solver, p, k, Π)
-        φk(d) = dot(solver.gfk[p.pg], d)
+        φk(d) = dot(solver.gfk[end], d)
         mk(d) = φk(d) + solver.ψ(d) # FP format : highest between φk and ψ
   
         mks = mk(solver.sk[p.ps])
@@ -128,7 +128,7 @@ function test_assumption_6(nlp, solver, p, Π, k, ξ)
       for i=1:length(Π)
         solver.hk[i] = solver.hk[p.ph]
       end
-      mks = dot(solver.gfk[p.pg], solver.sk[p.ps]) + solver.ψ(solver.sk[p.ps])
+      mks = dot(solver.gfk[end], solver.sk[p.ps]) + solver.ψ(solver.sk[p.ps])
       ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps()
 
       sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
@@ -152,8 +152,6 @@ function test_assumption_6(nlp, solver, p, Π, k, ξ)
   return ξ
 end
 
-
-
 function recompute_grad!(nlp, solver, p, k, Π) # p : current level of precision
   if Π[p.pg] == Π[end]
     @warn "maximum precision already reached on ∇f when recomputing gradient at iteration $k."
@@ -168,7 +166,7 @@ function recompute_grad!(nlp, solver, p, k, Π) # p : current level of precision
   end
 
   for i=1:length(Π)
-    solver.mν∇fk[i] .= -Π[i].(p.ν) * solver.gfk[i]
+    solver.mν∇fk[i] .= -Π[end].(p.ν) * solver.gfk[i]
   end  
   return
 end
@@ -188,7 +186,7 @@ function recompute_prox!(nlp, solver, p, k, Π)
   p.ps+=1
 
   solver.h = NormL1(Π[p.ps](1.0))
-  hxk = solver.h(solver.xk[p.ps]) #TODO add selected # !!! casté en la précision la + haute entre ps et ph
+  hxk = solver.h(solver.xk[p.ps]) #TODO add selected
   for i=1:length(Π)
     solver.hk[i] = Π[i].(hxk)
   end
@@ -199,6 +197,5 @@ function recompute_prox!(nlp, solver, p, k, Π)
   for i=1:length(Π)
     solver.sk[i] .= solver.sk[p.ps]
   end
-
   return
 end
