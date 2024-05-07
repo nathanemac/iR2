@@ -39,8 +39,8 @@ mutable struct iR2RegParams
   ν::Real
 end
 
-function iR2RegParams(Π::Vector{DataType}; verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1e-4, σk=1., ν=0.000740095979741405)
-  return iR2RegParams(1, 1, 1, 1, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, κξ, σk, ν)
+function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1e-4, σk=1., ν=0.000740095979741405)
+  return iR2RegParams(pf, pg, ph, ps, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, κξ, σk, ν)
 end
 
 function iR2Solver(
@@ -401,9 +401,9 @@ function iR2!(
 
     if ξ ≥ 0 && k == 1
       ϵ += ϵr * sqrt_ξ_νInv # make stopping test absolute and relative
+
     end
-    
-    if (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol * sqrt(p.κξ)) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ * sqrt(p.κξ))
+    if (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ * sqrt(p.κξ))
       if k > 1 # add this to avoid the case where the first iteration is optimal because of float16. 
         optimal = true
         continue
