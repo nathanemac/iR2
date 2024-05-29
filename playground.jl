@@ -19,8 +19,8 @@ include("utils.jl")
 nlp = AMPGO22(;n=100, type = Val(Float64), backend=:generic)
 nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.2, -1.345], backend=:generic)
 h = NormL1(1.0)
-options = ROSolverOptions(verbose=1, maxIter = 1000)
-params = iR2RegParams([Float16, Float32, Float64],  verb=false, activate_mp=true, κξ = 1e-3, pf = 3, ps = 3, pg = 3, ph = 3)
+options = ROSolverOptions(verbose=1, maxIter = 100)
+params = iR2RegParams([Float16, Float32, Float64],  verb=false, activate_mp=true, κξ = 1e-3, pf = 1, ps = 1, pg = 1, ph = 1)
 jso_res = RegularizedOptimization.R2(nlp, h, options)
 my_res = iR2(nlp, h, options, params) # launches vanilla R2-Reg (one might add verbose=1 for more verbosity)
 
@@ -55,7 +55,7 @@ filter!(row -> row[:name] != "rat43", names_pb_vars)
 for pb in eachrow(names_pb_vars)
   nlp = eval(Meta.parse("ADNLPProblems.$(pb[:name])(type=Val(Float64),backend = :generic)"))
   @show nlp.meta.name
-  params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ = 1.)
+  params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ = 1e-2)
   
   stat_ir2 = iR2(nlp, h, options, params_mp)
   push!(stats_ir2,
@@ -127,10 +127,10 @@ n_Autre_R2Reg = nrow(filter(row -> row[:status] == :exception, stats_r2))
 
 # sur tous les problèmes :
 solved(df) = df.status .== :first_order
-costnames = ["gradient evaluation cost", "time"]
+costnames = ["gradient evaluation cost"]
 costs = [
   df -> .!solved(df) .* Inf .+ Float64.(df.neval_grad_Float16 + 4*df.neval_grad_Float32 + 16*df.neval_grad_Float64),
-  df -> .!solved(df) .* Inf .+ df.elapsed_time
+  #df -> .!solved(df) .* Inf .+ df.elapsed_time
 ]
 gr()
 profile_solvers(stats_mp, costs, costnames, size = (800, 400), margin = 10Plots.px,)
@@ -145,12 +145,7 @@ stats_mp_2 = Dict(:iR2Reg => FO_iR2Reg,
 
 gr()
 profile_solvers(stats_mp_2, costs, costnames, size = (800, 400), margin = 10Plots.px,)
-
-
-
-
-
-
+title!("gradient evaluation cost on problems solved by iR2Reg")
 
 # convergence plot sur Rosenbrock 2D:
 Fhist_jso = jso_res.solver_specific[:Fhist][10:end]
@@ -166,9 +161,6 @@ using BenchmarkTools
 @benchmark iR2(nlp, h, options, params_mp)
 @benchmark RegularizedOptimization.R2(nlp, h, options)
 
-
-
-
 # évolution du % d'évaluation du gradient et du % de problemes résolus en first_order pour iR2 et R2 en fonction de maxIter
 MaxIters = [100, 500, 1000, 2000, 5000, 10000, 15000, 20000]
 stats_max_iters = Dict(
@@ -177,10 +169,13 @@ stats_max_iters = Dict(
   :nb_fo_r2 => Int[],
   :nb_mi_r2 => Int[],
   :nb_fo_ir2 => Int[],
-  :nb_mi_ir2 => Int[]
+  :nb_mi_ir2 => Int[],
+  :cost_grad_ir2 => Int[],
+  :cost_grad_r2 => Int[]
+
 )
 for mI in MaxIters
-  params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true)
+  params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ = 1e-2)
   options = ROSolverOptions(verbose=0, maxIter = mI, ϵa = 1e-6, ϵr = 1e-6)
   df_str = ":name => String[], :status => Symbol[], :objective => Real[], :iter => Int[], :elapsed_time => Float64[]"
   col_str = [":neval_obj_",":neval_h_",":neval_grad_",":neval_prox_"]
@@ -193,7 +188,7 @@ for mI in MaxIters
 
   for pb in eachrow(names_pb_vars)
     nlp = eval(Meta.parse("ADNLPProblems.$(pb[:name])(type=Val(Float64),backend = :generic)"))
-    params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true)
+    params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ = 1e-2)
   
     stat_ir2 = iR2(nlp, h, options, params_mp)
     push!(stats_ir2,
@@ -205,7 +200,7 @@ for mI in MaxIters
       [stat_ir2.solver_specific[:special_counters][:f][i] for i = 1:length(Π)]...,
       [stat_ir2.solver_specific[:special_counters][:h][i] for i = 1:length(Π)]...,
       [stat_ir2.solver_specific[:special_counters][:∇f][i] for i = 1:length(Π)]...,
-      [stat_ir2.solver_specific[:special_counters][:prox][i] for i = 1:length(Π)]...]
+      [stat_ir2.solver_specific[:special_counters][:prox][i] for i = 1:length(Π)]...,]
     )
   end
 
@@ -232,6 +227,9 @@ for mI in MaxIters
   stats_r2[!, :neval_grad_Float32] = zeros(nrow(stats_r2))
   stats_r2[!, :neval_grad_Float64] = stats_r2[!,:neval_grad]
 
+  cost_grad_ir2 = sum(stats_ir2[!,:neval_grad_Float16]) + 4*sum(stats_ir2[!,:neval_grad_Float32]) + 16*sum(stats_ir2[!,:neval_grad_Float64])
+  cost_grad_r2 = 16*sum(stats_r2[!,:neval_grad])
+
   percentage_eval_grad_f32=sum(stats_ir2[!,:neval_grad_Float32]) /( sum(stats_ir2[!,:neval_grad_Float16]) + sum(stats_ir2[!,:neval_grad_Float32]) + sum(stats_ir2[!,:neval_grad_Float64]))
   percentage_eval_grad_f16=sum(stats_ir2[!,:neval_grad_Float16]) /( sum(stats_ir2[!,:neval_grad_Float16]) + sum(stats_ir2[!,:neval_grad_Float32]) + sum(stats_ir2[!,:neval_grad_Float64]))
 
@@ -248,6 +246,8 @@ for mI in MaxIters
   push!(stats_max_iters[:nb_mi_r2], nb_max_iter_r2)
   push!(stats_max_iters[:nb_fo_ir2], nb_first_order_ir2)
   push!(stats_max_iters[:nb_mi_ir2], nb_max_iter_ir2)
+  push!(stats_max_iters[:cost_grad_ir2], cost_grad_ir2)
+  push!(stats_max_iters[:cost_grad_r2], cost_grad_r2)
 
 end
 
@@ -258,6 +258,8 @@ plot!(MaxIters, 100 .* (1 .- stats_max_iters[:percentage_f32] .- stats_max_iters
 plot(MaxIters, stats_max_iters[:nb_fo_r2] ./ 174, label="% first order r2", size = (800, 400), xlabel="value of maxIter", ylabel="% of problems solved", legend=:bottomright, title="% of problems solved for iR2 and R2",  margin = 10Plots.px)
 plot!(MaxIters, stats_max_iters[:nb_fo_ir2] ./ 174, label="% first order ir2")
 
+plot(MaxIters, stats_max_iters[:cost_grad_ir2], label="cost grad eval iR2", size = (800, 400), xlabel="value of maxIter", ylabel="gradient evaluation costs", legend=:bottomright, title="Gradient evaluation costs in relation to maxIter",  margin = 10Plots.px)
+plot!(MaxIters, stats_max_iters[:cost_grad_r2], label="cost grad eval R2")
 
 # évolution du % de problèmes résolus en fonction de la valeur de κξ pour iR2 pour maxIter fixé
 Kξ = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1]
@@ -265,11 +267,12 @@ stats_Kξ = Dict(
   :nb_fo_r2 => Int[],
   :nb_mi_r2 => Int[],
   :nb_fo_ir2 => Int[],
-  :nb_mi_ir2 => Int[]
-)
+  :nb_mi_ir2 => Int[], 
+  :cost_grad_ir2 => Int[],
+  :cost_grad_r2 => Int[])
 for κξ in Kξ
   params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ=κξ)
-  options = ROSolverOptions(verbose=0, maxIter = 1000)
+  options = ROSolverOptions(verbose=0, maxIter = 1000, ϵa = 1e-6, ϵr = 1e-6)
   df_str = ":name => String[], :status => Symbol[], :objective => Real[], :iter => Int[], :elapsed_time => Float64[]"
   col_str = [":neval_obj_",":neval_h_",":neval_grad_",":neval_prox_"]
   for col in col_str
@@ -303,11 +306,20 @@ for κξ in Kξ
   push!(stats_Kξ[:nb_fo_ir2], nb_first_order_ir2)
   push!(stats_Kξ[:nb_mi_ir2], nb_max_iter_ir2)
 
+  cost_grad_ir2 = sum(stats_ir2[!,:neval_grad_Float16]) + 4*sum(stats_ir2[!,:neval_grad_Float32]) + 16*sum(stats_ir2[!,:neval_grad_Float64])
+  cost_grad_r2 = 16*sum(stats_r2[!,:neval_grad])
+  push!(stats_Kξ[:cost_grad_ir2], cost_grad_ir2)
+
 end
 for κξ in Kξ
   push!(stats_Kξ[:nb_fo_r2], 91)
   push!(stats_Kξ[:nb_mi_r2], 83)
 end
+for κξ in Kξ
+  push!(stats_Kξ[:cost_grad_r2], 772000)
+end
 
-plot(Kξ, stats_Kξ[:nb_fo_r2] ./ 174, label="% first order r2", size = (800, 400), xlabel="value of κξ", ylabel="% of problems solved", legend=:bottomright, title="% of problems solved for iR2 and R2",  margin = 10Plots.px, xaxis = :log10)
+plot(Kξ, stats_Kξ[:nb_fo_r2] ./ 174, label="% first order r2", size = (800, 400), xlabel="value of κξ", ylabel="% of problems solved", legend=:bottomright, title="% solved",  margin = 10Plots.px, xaxis = :log10)
 plot!(Kξ, stats_Kξ[:nb_fo_ir2] ./ 174, label="% first order ir2")
+plot(Kξ, stats_Kξ[:cost_grad_ir2], label="cost grad eval iR2", size = (800, 400), xlabel="value of κξ", ylabel="gradient evaluation costs", legend=:bottomleft, title="Gradient evaluation costs in relation to κξ",  margin = 10Plots.px, xaxis = :log10)
+plot!(Kξ, stats_Kξ[:cost_grad_r2], label="cost grad eval R2")
