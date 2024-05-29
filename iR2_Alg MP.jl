@@ -1,14 +1,12 @@
 
-mutable struct MPR2Solver{R, S <: AbstractVector{R}} <: AbstractOptimizationSolver
-  xk::S
-  ∇fk::S
-  mν∇fk::S
-  gfk
-  fk
-  hk
-  sk
+mutable struct iR2Solver{R<:Real, S<:Vector} <: AbstractOptimizationSolver
+  xk::Vector{S}
+  mν∇fk::Vector{S}
+  gfk::Vector{S}
+  fk::S
+  hk::S
+  sk::Vector{S}
   xkn::S
-  s::S
   has_bnds::Bool
   l_bound::S
   u_bound::S
@@ -18,47 +16,73 @@ mutable struct MPR2Solver{R, S <: AbstractVector{R}} <: AbstractOptimizationSolv
   Hobj_hist::Vector{R}
   Complex_hist::Vector{Int}
   p_hist::Vector{Vector{Int64}}
+  special_counters::Dict{Symbol, Vector{Int}}
+  h
+  ψ
 end
 
-function MPR2Solver(
+mutable struct iR2RegParams
+  pf::Int
+  pg::Int
+  ph::Int
+  ps::Int
+  Π::Vector{DataType}
+  verb::Bool
+  activate_mp::Bool
+  flags::Vector{Bool}
+  κf::Real
+  κh::Real
+  κ∇::Real
+  κs::Real
+  κξ::Real
+  σk::Real
+  ν::Real
+end
+
+function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1e-4, σk=1., ν=0.000740095979741405)
+  return iR2RegParams(pf, pg, ph, ps, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, κξ, σk, ν)
+end
+
+function iR2Solver(
   x0::S,
   options::ROSolverOptions,
+  params::iR2RegParams,
   l_bound::S,
   u_bound::S;
 ) where {R <: Real, S <: AbstractVector{R}}
   maxIter = options.maxIter
-  xk = similar(x0)
-  ∇fk = similar(x0)
-  Π = [Float16, Float32, Float64]
+  Π = params.Π
+  xk = [Vector{R}(undef, length(x0)) for R in Π]
   gfk = [Vector{R}(undef, length(x0)) for R in Π]
   fk = [zero(R) for R in Π]
   hk = [zero(R) for R in Π]
   sk = [Vector{R}(undef, length(x0)) for R in Π]
-  mν∇fk = similar(x0)
+  mν∇fk = [Vector{R}(undef, length(x0)) for R in Π]
   xkn = similar(x0)
-  s = zero(x0)
   has_bnds = any(l_bound .!= R(-Inf)) || any(u_bound .!= R(Inf))
   if has_bnds
-    l_bound_m_x = similar(xk)
-    u_bound_m_x = similar(xk)
+    l_bound_m_x = similar(x0)
+    
+    u_bound_m_x = similar(x0)
   else
-    l_bound_m_x = similar(xk, 0)
-    u_bound_m_x = similar(xk, 0)
+    l_bound_m_x = similar(x0, 0)
+    u_bound_m_x = similar(x0, 0)
   end
   Fobj_hist = zeros(R, maxIter)
   Hobj_hist = zeros(R, maxIter)
   Complex_hist = zeros(Int, maxIter)
   p_hist = [zeros(Int, 4) for _ in 1:maxIter]
-  return MPR2Solver(
+  special_counters = Dict(:f => zeros(Int, length(Π)), :h => zeros(Int, length(Π)), :∇f => zeros(Int, length(Π)), :prox => zeros(Int, length(Π)))
+  h = nothing
+  ψ = nothing
+  return iR2Solver(
     xk,
-    ∇fk,
     mν∇fk,
     gfk,
     fk, 
     hk, 
     sk,
     xkn,
-    s,
     has_bnds,
     l_bound,
     u_bound,
@@ -68,12 +92,16 @@ function MPR2Solver(
     Hobj_hist,
     Complex_hist,
     p_hist,
+    special_counters,
+    h, 
+    ψ
   )
 end
 
+
 """
-    MPR2(nlp, h, options)
-    MPR2(f, ∇f!, h, options, x0)
+    iR2(nlp, h, options)
+    iR2(f, ∇f!, h, options, x0)
 
 A first-order quadratic regularization method for the problem
 
@@ -115,113 +143,121 @@ In the second form, instead of `nlp`, the user may pass in
 * `Hobj_hist`: an array with the history of values of the nonsmooth objective
 * `Complex_hist`: an array with the history of number of inner iterations.
 """
-function MPR2(nlp::AbstractNLPModel, args...; kwargs...)
+
+function iR2(
+  nlp::AbstractNLPModel, 
+  args...; 
+  kwargs...
+)
   kwargs_dict = Dict(kwargs...)
   x0 = pop!(kwargs_dict, :x0, nlp.meta.x0)
-  xk, k, outdict = MPR2(
-    x -> obj(nlp, x),
-    (g, x) -> grad!(nlp, x, g),
+    x, k, outdict = iR2(
+    t -> obj(nlp, t),
+    (g, t) -> grad!(nlp, t, g),
     args...,
     x0,
     nlp.meta.lvar,
     nlp.meta.uvar;
-    kwargs_dict...,
+    kwargs_dict...
   )
+  
   ξ = outdict[:ξ]
   stats = GenericExecutionStats(nlp)
+  stats.solution = eltype(x).(stats.solution)
+  stats.objective = eltype(x).(stats.objective)
+  stats.primal_feas = eltype(x).(stats.primal_feas)
+  stats.dual_feas = eltype(x).(stats.dual_feas)
   set_status!(stats, outdict[:status])
-  set_solution!(stats, xk)
-  set_objective!(stats, outdict[:fk] + outdict[:hk])
-  set_residuals!(stats, zero(eltype(xk)), ξ)
+  set_solution!(stats, x)
+  set_objective!(stats, typeof(nlp.meta.x0[1]).(outdict[:fk]) + typeof(nlp.meta.x0[1]).(outdict[:hk])) #TODO : change this
+  set_residuals!(stats, typeof(nlp.meta.x0[1]).(zero(eltype(x))), typeof(nlp.meta.x0[1]).(ξ))
   set_iter!(stats, k)
   set_time!(stats, outdict[:elapsed_time])
   set_solver_specific!(stats, :Fhist, outdict[:Fhist])
   set_solver_specific!(stats, :Hhist, outdict[:Hhist])
-  #set_solver_specific!(stats, :NonSmooth, outdict[:NonSmooth])
   set_solver_specific!(stats, :SubsolverCounter, outdict[:Chist])
   set_solver_specific!(stats, :p_hist, outdict[:p_hist])
+  set_solver_specific!(stats, :special_counters, outdict[:special_counters])
+  
   return stats
 end
 
 # method without bounds
-function MPR2(
+function iR2(
   f::F,
   ∇f!::G,
   h::H,
   options::ROSolverOptions{R},
-  x0::AbstractVector{R};
+  params::iR2RegParams,
+  x0::AbstractVector{S};
   selected::AbstractVector{<:Integer} = 1:length(x0),
-  verb::Bool = false,
-  Π::Vector{DataType} = [Float64],
-  activate_mp::Bool = true,
-  kwargs...,
-) where {F <: Function, G <: Function, H, R <: Real}
+  kwargs...
+) where {F <: Function, G <: Function, H, R <: Real, S <: Real}
   start_time = time()
   elapsed_time = 0.0
-  solver = MPR2Solver(x0, options, similar(x0, 0), similar(x0, 0))
-  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, x0; selected = selected, verb = verb, activate_mp = activate_mp, Π=Π)
+  solver = iR2Solver(x0, options, params, similar(x0, 0), similar(x0, 0))
+  k, status, fk, hk, ξ = iR2!(solver, f, ∇f!, h, options, x0; selected=selected, params=params,)
   elapsed_time = time() - start_time
+  
   outdict = Dict(
     :Fhist => solver.Fobj_hist[1:k],
     :Hhist => solver.Hobj_hist[1:k],
     :Chist => solver.Complex_hist[1:k],
-    #:NonSmooth => h,
     :status => status,
     :fk => fk,
     :hk => hk,
     :ξ => ξ,
     :elapsed_time => elapsed_time,
     :p_hist => solver.p_hist[1:k],
+    :special_counters => solver.special_counters
   )
-  return solver.xk, k, outdict
+  
+  return solver.xk[end], k, outdict
 end
 
-function MPR2(
+function iR2(
   f::F,
   ∇f!::G,
   h::H,
   options::ROSolverOptions{R},
-  x0::AbstractVector{R},
-  l_bound::AbstractVector{R},
-  u_bound::AbstractVector{R};
+  params::iR2RegParams,
+  x0::AbstractVector{S},
+  l_bound::AbstractVector{S},
+  u_bound::AbstractVector{S};
   selected::AbstractVector{<:Integer} = 1:length(x0),
-  verb::Bool = false, # affiche les informations sur la multiprécision
-  Π::Vector{DataType} = [Float64], # fp formats utilisés
-  activate_mp::Bool = false, # active la multiprécision
-  kwargs...,
-) where {F <: Function, G <: Function, H, R <: Real}
+  kwargs...
+) where {F <: Function, G <: Function, H, R <: Real, S <: Real}
   start_time = time()
   elapsed_time = 0.0
-  solver = MPR2Solver(x0, options, l_bound, u_bound) 
-  k, status, fk, hk, ξ = MPR2!(solver, f, ∇f!, h, options, x0; selected = selected, verb = verb, activate_mp = activate_mp, Π=Π)  
+  solver = iR2Solver(x0, options, params, l_bound, u_bound,)
+  k, status, fk, hk, ξ = iR2!(solver, f, ∇f!, h, options, params, x0; selected=selected)
   elapsed_time = time() - start_time
   outdict = Dict(
     :Fhist => solver.Fobj_hist[1:k],
     :Hhist => solver.Hobj_hist[1:k],
     :Chist => solver.Complex_hist[1:k],
-    #:NonSmooth => h,
     :status => status,
     :fk => fk,
     :hk => hk,
     :ξ => ξ,
     :elapsed_time => elapsed_time,
     :p_hist => solver.p_hist[1:k],
+    :special_counters => solver.special_counters
   )
-  return solver.xk, k, outdict
+
+  return solver.xk[end], k, outdict
 end
 
-function MPR2!(
-  solver::MPR2Solver{R},
+function iR2!(
+  solver::iR2Solver{R, S},
   f::F,
   ∇f!::G,
   h::H,
-  options::ROSolverOptions{R},
-  x0::AbstractVector{R};
+  options::ROSolverOptions,
+  p::iR2RegParams,
+  x0::S;
   selected::AbstractVector{<:Integer} = 1:length(x0),
-  verb::Bool = false,
-  activate_mp::Bool = false,
-  Π::Vector{DataType} = [Float64],
-) where {F <: Function, G <: Function, H, R <: Real}
+) where {F <: Function, G <: Function, H, R <: Real, S}
   start_time = time()
   elapsed_time = 0.0
   ϵ = options.ϵa
@@ -233,36 +269,19 @@ function MPR2!(
   σmin = options.σmin
   η1 = options.η1
   η2 = options.η2
-  ν = options.ν
+  p.ν = options.ν
   γ = options.γ
 
-  κf = 1e-5 # respectent les conditions du papier
-  κ∇ = 4e-2
-  κh = 2e-5
-  κs = 1.
-  # κξ = 1. inutile
+  if p.activate_mp
+    test_κ(p.κs, p.κf, p.κ∇, p.κh, η1, η2)
+  end  
 
-  if activate_mp
-    test_κ(κs, κf, κ∇, κh, η1, η2) # pour respecter les conditions de positivité (cf analyse de convergence)
-  end
-
-
-  # initializing levels of precision for our inexact functions. 
-  pf, pg, ph, ps = 1, 1, 1, 1
+  Π = p.Π
   P = length(Π)
-  
 
-  # retrieve workspace
-  xk = solver.xk
-  xk .= x0
-  ∇fk = solver.∇fk
-  gfk = solver.gfk
-  fk = solver.fk
-  hk = solver.hk
-  sk = solver.sk
-  mν∇fk = solver.mν∇fk
-  xkn = solver.xkn
-  s = solver.s
+  for i=1:P 
+    solver.xk[i] .= x0
+  end
   has_bnds = solver.has_bnds
   if has_bnds
     l_bound = solver.l_bound
@@ -285,28 +304,24 @@ function MPR2!(
     ptf = 1
   end
 
+  solver.h = h
   # initialize parameters
-  hxk = @views h(xk[selected])
+  hxk = @views solver.h(solver.xk[p.ph][selected])
+  solver.special_counters[:h][p.ph] += 1
   if hxk == Inf
     verbose > 0 && @info "R2: finding initial guess where nonsmooth term is finite"
-    prox!(xk, h, x0, one(eltype(x0)))
-    hxk = @views h(xk[selected])
-    hxk < Inf || error("prox computation must be erroneous")
-    verbose > 0 && @debug "R2: found point where h has value" hk
+    prox!(solver.xk[p.ph][selected], solver.h, x0, one(eltype(x0)))
+    hxk = @views solver.h(solver.xk[p.ph][selected])
+    if hxk == Inf
+      status = :exception 
+      @warn "prox computation must be erroneous. Early stopping iR2-Reg."
+      return 1, status, solver.fk[end], solver.hk[end], Inf, [p.pf, p.pg, p.ph, p.ps]
+    end
   end
   hxk == -Inf && error("nonsmooth term is not proper")
 
-
-  for i=1:P
-    hk[i] = Π[i](hxk)
-  end
-
-  if has_bnds
-    @. l_bound_m_x = l_bound - xk
-    @. u_bound_m_x = u_bound - xk
-    ψ = shifted(h, xk, l_bound_m_x, u_bound_m_x, selected)
-  else
-    ψ = shifted(h, xk)
+  for i=1:P 
+    solver.hk[i] = Π[i].(hxk)
   end
 
   if verbose > 0
@@ -315,136 +330,158 @@ function MPR2!(
     #! format: off
   end
 
-  local ξ::R
+  local ξ
   k = 0
-  σk = max(1 / ν, σmin) # toujours en Float64
-  ν = 1 / σk
+  p.σk = max(1 / p.ν, σmin)
+  p.ν = 1 / p.σk
   sqrt_ξ_νInv = one(R)
 
-  fxk = f(xk)
+  fxk = f(solver.xk[p.pf])
+  solver.special_counters[:f][p.pf] += 1
   for i=1:P
-    fk[i] = Π[i](fxk)
-  end
-  ∇f!(∇fk, xk)
-
-  for i=1:P
-    gfk[i] .= ∇fk
+    solver.fk[i] = Π[i].(fxk)
   end
 
-  @. mν∇fk = -ν * gfk[pg] # !! En quelle précision ? --> Float64 car ν en Float64. 
+  ∇f!(solver.gfk[p.pg], solver.xk[p.pg])
+  solver.special_counters[:∇f][p.pg] += 1
+  for i=1:P 
+    solver.gfk[i] .= solver.gfk[p.pg]
+    solver.mν∇fk[i] .= -Π[end].(p.ν) * solver.gfk[i]
+  end
 
   optimal = false
   tired = maxIter > 0 && k ≥ maxIter || elapsed_time > maxTime
 
-  flags=[false, false, false] # pour contrôler l'affichage dans les fonctions de test de précision.
-
-
   while !(optimal || tired)
     k = k + 1
     elapsed_time = time() - start_time
-    Fobj_hist[k] = Π[end].(fk[pf]) # cast en Float64 pour l'affichage
-    Hobj_hist[k] = Π[end].(hk[ph]) # cast en Float64 pour l'affichage
-    p_hist[k] = [pf, pg, ph, ps]
+
+    Fobj_hist[k] = solver.fk[p.pf] 
+    Hobj_hist[k] = solver.hk[p.ph] 
+    p_hist[k] = [p.pf, p.pg, p.ph, p.ps]
 
     # define model
-    φk(d) = dot(gfk[pg], d) # !! précision dépend de d et de pg
-    mk(d)::R = φk(d) + ψ(d)::R # !! en Float64 par défaut car ψ en Float64
+    if has_bnds #TODO updatde this later 
+      @. l_bound_m_x = l_bound - solver.xk[1]
+      @. u_bound_m_x = u_bound - solver.xk[1]
+      solver.ψ = shifted(solver.h, solver.xk[1], l_bound_m_x, u_bound_m_x, selected)
+    else
+      solver.h = NormL1(Π[p.ps](1.0)) # need to redefine h at each iteration because when shifting: MethodError: no method matching shifted(::NormL1{Float64}, ::Vector{Float16}) so the norm and the shift vector must be same FP Format. 
+      solver.ψ = shifted(solver.h, solver.xk[p.ps]) # therefore ψ FP format is s FP format
+    end
+    φk(d) = dot(solver.gfk[end], d) # FP format : highest available to avoid over/underflow
+    mk(d) = φk(d) + solver.ψ(d)
 
-    prox!(s, ψ, mν∇fk, ν) # en Float64
+    prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps].(p.ν)) # on calcule le prox en le FP format de s car tous les arguments de prox!() doivent être de même FP format.
+    solver.special_counters[:prox][p.ps] += 1
+
     Complex_hist[k] += 1
-
-    for (i, r) in enumerate(Π)
-      sk[i] = map(r, s)  # map pour appliquer le type R à chaque élément de s
+    for i=1:P
+      solver.sk[i] .= solver.sk[p.ps] # on a mis a jour solver.sk[p.ps] dans prox!() donc c'est celui qu'on met à jour. 
     end
 
-    if activate_mp
-      pf, ps, flags = test_condition_f(fk, sk, σk, κf, pf, ps, Π, k, verb, flags)
-      ph, ps, flags = test_condition_h(hk, sk, σk, κh, ph, ps, Π, k, verb, flags)
-      pg, ps, flags = test_condition_∇f(gfk, sk, σk, κ∇, pg, ps, Π, k, verb, flags)
-      # la précision de chaque variable diffère pour plus de flexibilité. 
+    if p.activate_mp 
+      test_condition_f(nlp, solver, p, Π, k)
+      test_condition_h(nlp, solver, p, Π, k)
+      test_condition_∇f(nlp, solver, p, Π, k)
     end
 
-    mks = Π[ps](mk(sk[ps])) 
-    ξ = hk[ph] - mks + max(1, abs(hk[ph])) * 10 * eps() # casté en la précision de hk[ph]. 
-    if activate_mp
-      ps, ph, ξ, flags = test_assumption_6(ξ, κs, σk, sk, Π, ps, ph, mk, hk, k, verb, flags)
+    mks = mk(solver.sk[p.ps]) # casté en la précision la + haute entre celle de mk et ps
+
+    ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps() # casté en la précision la plus haute entre ph et ps. 
+    if p.activate_mp
+      ξ = test_assumption_6(nlp, solver, options, p, Π, k, ξ)
     end
 
-    sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / ν) : sqrt(-ξ / ν) # en Float64 car ξ en Float64
+    #-------------------------------------------------------------------------------------------
+    # -- à partir de là, toutes les conditions de convergence sont garanties à l'itération k. --
+    #-------------------------------------------------------------------------------------------
+
+    sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
 
     if ξ ≥ 0 && k == 1
       ϵ += ϵr * sqrt_ξ_νInv # make stopping test absolute and relative
+
     end
-    
-    if (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ)
-      optimal = true
-      continue
+    if (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ * sqrt(p.κξ))
+      if k > 1 # add this to avoid the case where the first iteration is optimal because of float16. 
+        optimal = true
+        continue
+      end
     end
 
-    if (ξ < 0 && sqrt_ξ_νInv > neg_tol) 
-      error("R2: prox-gradient step should produce a decrease but ξ = $(ξ)")
+    if (ξ < 0 && sqrt_ξ_νInv > 1e4*neg_tol) #TODO change this 
+      status = :exception 
+      @info @sprintf "%6d %8.1e %8.1e %8s %8s %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k solver.fk[p.pf] solver.hk[p.ph] "" "" p.σk norm(solver.xk[end]) norm(solver.xk[end]) "" Π[p.pf] Π[p.pg] Π[p.ph] Π[p.ps]
+      @warn "R2: prox-gradient step should produce a decrease but ξ = $(ξ). Early stopping iR2-Reg."
+      return k, status, solver.fk[end], solver.hk[end], sqrt_ξ_νInv, [p.pf, p.pg, p.ph, p.ps]
     end
 
-    xkn .= xk .+ sk[ps] # casté en la précision de xk (Float64)
-    fxkn = f(xkn)
-    fkn = Π[pf].(fxkn)
-    hkn = Π[ph].(@views h(xkn[selected]))
+    solver.xkn .= solver.xk[end] .+ solver.sk[end] # choix de le mettre en la précision la + haute
+    fkn = f(solver.xkn)
+    solver.special_counters[:f][end] += 1
+    hkn = @views solver.h(solver.xkn[selected]) # fkn et hkn en la précision de xkn = celle de ps 
+    solver.special_counters[:h][p.ph] += 1
     hkn == -Inf && error("nonsmooth term is not proper")
 
-    Δobj = (fk[pf] + hk[ph]) - (fkn + hkn) + max(1, abs(fk[pf] + hk[ph])) * 10 * eps() #TODO change eps() to eps(Π[p]), but which one? Car ici en Float64 aussi
-    ρk = Δobj / ξ # En Float64
+    Δobj = (solver.fk[end] + solver.hk[end]) - (fkn + hkn) + max(1, abs(solver.fk[end] + solver.hk[end])) * 10 * eps() #TODO change eps() to eps(Π[p]), but which one? 
+    ρk = Δobj / ξ # En la précision la + haute des 2
 
     if (verbose > 0) && (k % ptf == 0)
       #! format: off
       σ_stat = (η2 ≤ ρk < Inf) ? "↘" : (ρk < η1 ? "↗" : "=")
-      @info @sprintf "%6d %8.1e %8.1e %7.1e %8.1e %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k fk[pf] hk[ph] sqrt_ξ_νInv ρk σk norm(xk) norm(sk[ps]) σ_stat Π[pf] Π[pg] Π[ph] Π[ps]
+      @info @sprintf "%6d %8.1e %8.1e %7.1e %8.1e %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k solver.fk[p.pf] solver.hk[p.ph] sqrt_ξ_νInv ρk p.σk norm(solver.xk[end]) norm(solver.xk[end]) σ_stat Π[p.pf] Π[p.pg] Π[p.ph] Π[p.ps]
       #! format: on
     end
 
     if η2 ≤ ρk < Inf
-      σk = max(σk / γ, σmin)
+      p.σk = max(p.σk / γ, σmin)
     end
 
     if η1 ≤ ρk < Inf
-      xk .= xkn
-      if has_bnds
-        @. l_bound_m_x = l_bound - xk
-        @. u_bound_m_x = u_bound - xk
-        set_bounds!(ψ, l_bound_m_x, u_bound_m_x)
+      for i=1:P
+        solver.xk[i] .= solver.xkn
       end
 
-      for i=1:P
-        fk[i] = Π[i](fkn)
+      if has_bnds #TODO maybe change this
+        @. l_bound_m_x = l_bound - xk[1]
+        @. u_bound_m_x = u_bound - xk[1]
+        set_bounds!(solver.ψ, l_bound_m_x, u_bound_m_x)
       end
+      
       for i=1:P
-        hk[i] = Π[i](hkn)
+        solver.fk[i] = Π[i].(fkn)
+        solver.hk[i] = Π[i].(hkn)
       end
 
-      ∇f!(∇fk, xk)
-      for i=1:P
-        gfk[i] .= ∇fk
+      ∇f!(solver.gfk[p.pg], solver.xk[p.pg])
+      solver.special_counters[:∇f][p.pg] += 1
+      for i=1:P 
+        solver.gfk[i] .= solver.gfk[p.pg]
       end
 
-      shift!(ψ, xk)
+      shift!(solver.ψ, solver.xk[p.ph])
     end
 
     if ρk < η1 || ρk == Inf
-      σk = σk * γ
+      p.σk = p.σk * γ
     end
 
-    ν = 1 / σk
+    p.ν = 1 / p.σk # !!! Under/Overflow possible here.
     tired = maxIter > 0 && k ≥ maxIter
     if !tired
-      @. mν∇fk = -ν * gfk[pg]
+      for i=1:P
+        solver.mν∇fk[i] .= -Π[end].(p.ν) * solver.gfk[i]
+      end
     end
   end
 
   if verbose > 0
     if k == 1
-      @info @sprintf "%6d %8.1e %8.1e" k fk[pf] hk[ph]
+      @info @sprintf "%6d %8.1e %8.1e" k solver.fk[p.pf] solver.hk[p.ph]
     elseif optimal
       #! format: off
-      @info @sprintf "%6d %8.1e %8.1e %7.1e %8s %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k fk[pf] hk[ph] sqrt(ξ/ν) "" σk norm(xk) norm(s) "" Π[pf] Π[pg] Π[ph] Π[ps]
+      @info @sprintf "%6d %8.1e %8.1e %7.1e %8s %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k solver.fk[p.pf] solver.hk[p.ph] sqrt(ξ/p.ν) "" p.σk norm(solver.xk[end]) norm(solver.xk[end]) "" Π[p.pf] Π[p.pg] Π[p.ph] Π[p.ps]
       @info "R2: terminating with √(ξ/ν) = $(sqrt_ξ_νInv)"
     end
   end
@@ -458,5 +495,5 @@ function MPR2!(
   else
     :exception
   end
-  return k, status, Float64(fk[pf]), Float64(hk[ph]), sqrt_ξ_νInv, [pf, pg, ph, ps]
+  return k, status, solver.fk[end], solver.hk[end], sqrt_ξ_νInv, [p.pf, p.pg, p.ph, p.ps]
 end

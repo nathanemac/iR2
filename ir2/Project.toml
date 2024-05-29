@@ -1,5 +1,8 @@
 [deps]
 ADNLPModels = "54578032-b7ea-4c30-94aa-7cbd1cce6c9a"
+BenchmarkProfiles = "ecbce9bc-3e5e-569d-9e29-55181f61f8d0"
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 JSOSolvers = "10dff2fc-5484-5881-a0e0-c90441020f8a"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
@@ -13,3 +16,4 @@ RegularizedOptimization = "196f2941-2d58-45ba-9f13-43a2532b2fa8"
 ShiftedProximalOperators = "d4fd37fa-580c-4e43-9b30-361c21aae263"
 SolverBenchmark = "581a75fa-a23a-52d0-a590-d6201de2218a"
 SolverCore = "ff4d7338-4cf1-434d-91df-b86cb86fb843"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
