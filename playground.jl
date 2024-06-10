@@ -16,11 +16,11 @@ include("utils.jl")
 
 ####################
 # tests sur 1 problème
-nlp = AMPGO22(;n=100, type = Val(Float64), backend=:generic)
+nlp = AMPGO20(;n=100, type = Val(Float64), backend=:generic)
 nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.2, -1.345], backend=:generic)
 h = NormL1(1.0)
-options = ROSolverOptions(verbose=1, maxIter = 100)
-params = iR2RegParams([Float16, Float32, Float64],  verb=false, activate_mp=true, κξ = 1e-3, pf = 1, ps = 1, pg = 1, ph = 1)
+options = ROSolverOptions(verbose=1, maxIter = 100, ϵa = 1e-4, ϵr = 1e-4)
+params = iR2RegParams([Float16, Float32, Float64],  verb=false, activate_mp=true, κξ = 1., pf = 1, ps = 1, pg = 1, ph = 1)
 jso_res = RegularizedOptimization.R2(nlp, h, options)
 my_res = iR2(nlp, h, options, params) # launches vanilla R2-Reg (one might add verbose=1 for more verbosity)
 
@@ -34,8 +34,8 @@ using Statistics
 ##########################
 Π = [Float16, Float32, Float64]
 h = NormL1(1.0)
-params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true)
-options = ROSolverOptions(verbose=0, maxIter = 1000, ϵa = 1e-6, ϵr = 1e-6)
+params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ=1.)
+options = ROSolverOptions(verbose=0, maxIter = 1000, ϵa = 1e-4, ϵr = 1e-4)
 df_str = ":name => String[], :status => Symbol[], :objective => Real[], :iter => Int[], :elapsed_time => Float64[]"
 col_str = [":neval_obj_",":neval_h_",":neval_grad_",":neval_prox_"]
 for col in col_str
@@ -55,7 +55,7 @@ filter!(row -> row[:name] != "rat43", names_pb_vars)
 for pb in eachrow(names_pb_vars)
   nlp = eval(Meta.parse("ADNLPProblems.$(pb[:name])(type=Val(Float64),backend = :generic)"))
   @show nlp.meta.name
-  params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ = 1e-2)
+  params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ = 1.)
   
   stat_ir2 = iR2(nlp, h, options, params_mp)
   push!(stats_ir2,
@@ -162,7 +162,7 @@ using BenchmarkTools
 @benchmark RegularizedOptimization.R2(nlp, h, options)
 
 # évolution du % d'évaluation du gradient et du % de problemes résolus en first_order pour iR2 et R2 en fonction de maxIter
-MaxIters = [100, 500, 1000, 2000, 5000, 10000, 15000, 20000]
+MaxIters = [100, 500, 1000, 2000, 5000, 10000, 15000, 20000, 50000, 100000]
 stats_max_iters = Dict(
   :percentage_f16 => Float64[],
   :percentage_f32 => Float64[],
@@ -175,8 +175,8 @@ stats_max_iters = Dict(
 
 )
 for mI in MaxIters
-  params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ = 1e-2)
-  options = ROSolverOptions(verbose=0, maxIter = mI, ϵa = 1e-6, ϵr = 1e-6)
+  params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ = 1.)
+  options = ROSolverOptions(verbose=0, maxIter = mI, ϵa = 1e-4, ϵr = 1e-4)
   df_str = ":name => String[], :status => Symbol[], :objective => Real[], :iter => Int[], :elapsed_time => Float64[]"
   col_str = [":neval_obj_",":neval_h_",":neval_grad_",":neval_prox_"]
   for col in col_str
@@ -188,7 +188,7 @@ for mI in MaxIters
 
   for pb in eachrow(names_pb_vars)
     nlp = eval(Meta.parse("ADNLPProblems.$(pb[:name])(type=Val(Float64),backend = :generic)"))
-    params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ = 1e-2)
+    params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ = 1.)
   
     stat_ir2 = iR2(nlp, h, options, params_mp)
     push!(stats_ir2,
@@ -262,7 +262,7 @@ plot(MaxIters, stats_max_iters[:cost_grad_ir2], label="cost grad eval iR2", size
 plot!(MaxIters, stats_max_iters[:cost_grad_r2], label="cost grad eval R2")
 
 # évolution du % de problèmes résolus en fonction de la valeur de κξ pour iR2 pour maxIter fixé
-Kξ = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1]
+Kξ = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.]
 stats_Kξ = Dict(
   :nb_fo_r2 => Int[],
   :nb_mi_r2 => Int[],
@@ -272,7 +272,7 @@ stats_Kξ = Dict(
   :cost_grad_r2 => Int[])
 for κξ in Kξ
   params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ=κξ)
-  options = ROSolverOptions(verbose=0, maxIter = 1000, ϵa = 1e-6, ϵr = 1e-6)
+  options = ROSolverOptions(verbose=0, maxIter = 1000, ϵa = 1e-4, ϵr = 1e-4)
   df_str = ":name => String[], :status => Symbol[], :objective => Real[], :iter => Int[], :elapsed_time => Float64[]"
   col_str = [":neval_obj_",":neval_h_",":neval_grad_",":neval_prox_"]
   for col in col_str
@@ -323,3 +323,31 @@ plot(Kξ, stats_Kξ[:nb_fo_r2] ./ 174, label="% first order r2", size = (800, 40
 plot!(Kξ, stats_Kξ[:nb_fo_ir2] ./ 174, label="% first order ir2")
 plot(Kξ, stats_Kξ[:cost_grad_ir2], label="cost grad eval iR2", size = (800, 400), xlabel="value of κξ", ylabel="gradient evaluation costs", legend=:bottomleft, title="Gradient evaluation costs in relation to κξ",  margin = 10Plots.px, xaxis = :log10)
 plot!(Kξ, stats_Kξ[:cost_grad_r2], label="cost grad eval R2")
+
+
+# trying to find out why iR2 is not able to solve some problems that R2 can solve
+for pb in eachrow(names_pb_vars)
+  nlp = eval(Meta.parse("ADNLPProblems.$(pb[:name])(type=Val(Float64),backend = :generic)"))
+  params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ=1.)
+  options = ROSolverOptions(verbose=0, maxIter = 1000, ϵa = 1e-4, ϵr = 1e-4)
+  my_res = iR2(nlp, h, options, params_mp)
+  jso_res = RegularizedOptimization.R2(nlp, h, options)
+  if my_res.status != :first_order && jso_res.status == :first_order
+    println(" $(nlp.meta.name)")
+  end
+end
+nlp=jennrichsampson(; type = Val(Float64), backend=:generic)
+options = ROSolverOptions(verbose=1, maxIter = 5, ϵa = 1e-4, ϵr = 1e-4)
+params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ=1.)
+my_res = iR2(nlp, h, options, params_mp)
+jso_res = RegularizedOptimization.R2(nlp, h, options)
+
+# sqrt_ξ_νInv is NaN at first iteration. Keep digging.
+
+
+
+############## TV PROBLEM ################
+
+include("../TV.jl/tv.jl")
+include("../TV.jl/utils.jl")
+

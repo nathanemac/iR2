@@ -372,7 +372,7 @@ function iR2!(
     φk(d) = dot(solver.gfk[end], d) # FP format : highest available to avoid over/underflow
     mk(d) = φk(d) + solver.ψ(d)
 
-    prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps].(p.ν)) # on calcule le prox en le FP format de s car tous les arguments de prox!() doivent être de même FP format.
+    prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps].(p.ν)) # on calcule le prox en FP format de s car tous les arguments de prox!() doivent être de même FP format.
     solver.special_counters[:prox][p.ps] += 1
 
     Complex_hist[k] += 1
@@ -385,9 +385,7 @@ function iR2!(
       test_condition_h(nlp, solver, p, Π, k)
       test_condition_∇f(nlp, solver, p, Π, k)
     end
-
     mks = mk(solver.sk[p.ps]) # casté en la précision la + haute entre celle de mk et ps
-
     ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps() # casté en la précision la plus haute entre ph et ps. 
     if p.activate_mp
       ξ = test_assumption_6(nlp, solver, options, p, Π, k, ξ)
