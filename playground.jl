@@ -323,3 +323,15 @@ plot(Kξ, stats_Kξ[:nb_fo_r2] ./ 174, label="% first order r2", size = (800, 40
 plot!(Kξ, stats_Kξ[:nb_fo_ir2] ./ 174, label="% first order ir2")
 plot(Kξ, stats_Kξ[:cost_grad_ir2], label="cost grad eval iR2", size = (800, 400), xlabel="value of κξ", ylabel="gradient evaluation costs", legend=:bottomleft, title="Gradient evaluation costs in relation to κξ",  margin = 10Plots.px, xaxis = :log10)
 plot!(Kξ, stats_Kξ[:cost_grad_r2], label="cost grad eval R2")
+
+############### TV ################
+include("../TV.jl")
+
+# 1D signal 
+
+signal = sin.(2π*0.01*(1:1000)) 
+y = signal + 0.1*randn(size(signal))
+
+
+# creating the TV problem in NLP format
+nlp = ADNLPModel((x, y, λ, Dx) -> 0.5*sum(abs2.(x-y)) + λ*norm(Dx, 1), y; backend=:generic) 
