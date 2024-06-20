@@ -45,7 +45,7 @@ mutable struct iR2Solver{R<:Real, S<:AbstractVector} <: AbstractOptimizationSolv
       Contains the history of the values of the nonsmooth term
 
     Complex_hist::Vector{Int}
-      Contains the history of number of inner iterations.
+      Contains the history of number of inner iterations (iterations for solving the prox subproblem). 
 
     p_hist::Vector{Vector{Int}}
       Contains the history of the precision levels used at each iteration
@@ -118,35 +118,36 @@ mutable struct iR2RegParams
         - ∇f
         - s
 
-    κf::Real
+    κf::H
       accuracy parameter for the smooth term (see paper for details). The accuracy condition on the smooth term is: 
         abs(fk * (1 - 1/(1 + eps)) ≤ κf * σk * ‖sk‖²
+      H is the "Highest" floating point format in Π. #TODO : check this. 
 
-    κh::Real
+    κh::H
       accuracy parameter for the nonsmooth term (see paper for details). The accuracy condition on the nonsmooth term is: 
         abs(hk * (1 - 1/(1 + eps)) ≤ κh * σk * ‖sk‖²
 
-    κ∇::Real
+    κ∇::H
       accuracy parameter for the gradient of the smooth term (see paper for details). The accuracy condition on the gradient of the smooth term is: 
         abs(dot(gfk, sk) * (1 - 1/(1 + eps)) ≤ κ∇ * σk * ‖sk‖
 
-    κs::Real
+    κs::H
       accuracy parameter for the step (see paper for details). The condition on the step is: 
         ξ ≥ 1/2 * κs* σk * ‖sk‖²
 
-    κξ::Real
+    κξ::H
       accuracy parameter for ξ (see paper for details). Involved in the stopping criterion of the algorithm : 
         sqrt(ξk * σk) ≤ ϵ * sqrt(κξ)
         
 
-    σk::Real
+    σk::H
       regularization parameter. The algorithm uses the regularization parameter σk = 1/ν
 
-    ν::Real
+    ν::H
       precision parameter. The algorithm uses the precision parameter ν = 1/σk
 
 """
-mutable struct iR2RegParams
+mutable struct iR2RegParams{H<:Real}
   pf::Int
   pg::Int
   ph::Int
@@ -155,18 +156,19 @@ mutable struct iR2RegParams
   verb::Bool
   activate_mp::Bool
   flags::Vector{Bool}
-  κf::Real
-  κh::Real
-  κ∇::Real
-  κs::Real
-  κξ::Real
-  σk::Real
-  ν::Real
+  κf::H
+  κh::H
+  κ∇::H
+  κs::H
+  κξ::H
+  σk::H
+  ν::H
 end
 
-function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1e-4, σk=1., ν=0.000740095979741405)
+function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1e-4, σk=1., ν=eps(Π[end])^(1/5))
   return iR2RegParams(pf, pg, ph, ps, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, κξ, σk, ν)
 end
+
 function iR2Solver(
   x0::S,
   options::ROSolverOptions,
