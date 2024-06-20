@@ -27,10 +27,10 @@ mutable struct iR2Solver{R<:Real, S<:AbstractVector} <: AbstractOptimizationSolv
       Indicates whether the problem has bounds
 
     l_bound::S
-      Indicates whether the problem has lower bounds
+      Lower bounds of the problem
 
     u_bound::S
-      Indicates whether the problem has upper bounds
+      Upper bounds of the problem
 
     l_bound_m_x::S
       Contains the update of the lower bounds shifted to the current iterate xk

@@ -350,4 +350,3 @@ jso_res = RegularizedOptimization.R2(nlp, h, options)
 
 include("../TV.jl/tv.jl")
 include("../TV.jl/utils.jl")
-
