@@ -1,5 +1,70 @@
+"""
+mutable struct iR2Solver{R<:Real, S<:AbstractVector} <: AbstractOptimizationSolver
 
-mutable struct iR2Solver{R<:Real, S<:Vector} <: AbstractOptimizationSolver
+    xk::Vector{S}
+      Contains the current iterate in the floating point formats specified in Π (see iR2RegParams). 
+      For example, if Π = [Float16, Float32, Float64], then xk = [xk16, xk32, xk64] where xk16, xk32, xk64 are the iterates in Float16, Float32 and Float64 respectively.
+
+    mν∇fk::Vector{S}
+      Contains the negative gradient of f in the proximal step in the floating point formats specified in Π
+
+    gfk::Vector{S}
+      Contains the gradient of f in the floating point formats specified in Π
+
+    fk::S
+      Contains the value of f in the current floating point formats of the smooth term
+
+    hk::S
+      Contains the value of h in the floating point format of the nonsmooth term
+
+    sk::Vector{S}
+      Contains the step in the proximal step in the floating point formats specified in Π
+
+    xkn::S
+      Contains the next iterate in the floating point format of ??? (#TODO: check this)
+
+    has_bnds::Bool
+      Indicates whether the problem has bounds
+
+    l_bound::S
+      Indicates whether the problem has lower bounds
+
+    u_bound::S
+      Indicates whether the problem has upper bounds
+
+    l_bound_m_x::S
+      Contains the update of the lower bounds shifted to the current iterate xk
+
+    u_bound_m_x::S
+      Contains the update of the upper bounds shifted to the current iterate xk
+
+    Fobj_hist::Vector{R}
+      Contains the history of the values of the smooth term
+
+    Hobj_hist::Vector{R}
+      Contains the history of the values of the nonsmooth term
+
+    Complex_hist::Vector{Int}
+      Contains the history of number of inner iterations.
+
+    p_hist::Vector{Vector{Int}}
+      Contains the history of the precision levels used at each iteration
+
+    special_counters::Dict{Symbol, Vector{Int}}
+      Contains the history of the number of times the following evaluations were performed at each precision level specified in Π:
+        - f
+        - h
+        - ∇f
+        - prox
+
+    h
+      Function that computes the value of the nonsmooth term
+
+    ψ
+      Model of the the nonsmooth term at xk + s
+
+"""
+mutable struct iR2Solver{R<:Real, S<:AbstractVector} <: AbstractOptimizationSolver
   xk::Vector{S}
   mν∇fk::Vector{S}
   gfk::Vector{S}
@@ -15,12 +80,72 @@ mutable struct iR2Solver{R<:Real, S<:Vector} <: AbstractOptimizationSolver
   Fobj_hist::Vector{R}
   Hobj_hist::Vector{R}
   Complex_hist::Vector{Int}
-  p_hist::Vector{Vector{Int64}}
+  p_hist::Vector{Vector{Int}}
   special_counters::Dict{Symbol, Vector{Int}}
   h
   ψ
 end
 
+
+"""
+mutable struct iR2RegParams
+
+    pf::Int
+      current precision level of the smooth term
+
+    pg::Int
+      current precision level of the gradient of the smooth term
+
+    ph::Int
+      current precision level of the nonsmooth term
+
+    ps::Int
+      current precision level of the step
+
+    Π::Vector{DataType}
+      Contains the floating point formats used in the algorithm. For example, if Π = [Float16, Float32, Float64], then the algorithm will use Float16, Float32 and Float64.
+
+    verb::Bool
+      whether to display general information about the algorithm
+
+    activate_mp::Bool
+      whether to activate the mixed precision mode. If true, the algorithm will test the conditions of the mixed precision mode.
+
+    flags::Vector{Bool}
+      Contains some flags of the conditions of the mixed precision mode. If a flag is true, it means that the maximum precision level has been reached for the corresponding variable among : 
+        - f
+        - h
+        - ∇f
+        - s
+
+    κf::Real
+      accuracy parameter for the smooth term (see paper for details). The accuracy condition on the smooth term is: 
+        abs(fk * (1 - 1/(1 + eps)) ≤ κf * σk * ‖sk‖²
+
+    κh::Real
+      accuracy parameter for the nonsmooth term (see paper for details). The accuracy condition on the nonsmooth term is: 
+        abs(hk * (1 - 1/(1 + eps)) ≤ κh * σk * ‖sk‖²
+
+    κ∇::Real
+      accuracy parameter for the gradient of the smooth term (see paper for details). The accuracy condition on the gradient of the smooth term is: 
+        abs(dot(gfk, sk) * (1 - 1/(1 + eps)) ≤ κ∇ * σk * ‖sk‖
+
+    κs::Real
+      accuracy parameter for the step (see paper for details). The condition on the step is: 
+        ξ ≥ 1/2 * κs* σk * ‖sk‖²
+
+    κξ::Real
+      accuracy parameter for ξ (see paper for details). Involved in the stopping criterion of the algorithm : 
+        sqrt(ξk * σk) ≤ ϵ * sqrt(κξ)
+        
+
+    σk::Real
+      regularization parameter. The algorithm uses the regularization parameter σk = 1/ν
+
+    ν::Real
+      precision parameter. The algorithm uses the precision parameter ν = 1/σk
+
+"""
 mutable struct iR2RegParams
   pf::Int
   pg::Int
@@ -42,27 +167,26 @@ end
 function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1e-4, σk=1., ν=0.000740095979741405)
   return iR2RegParams(pf, pg, ph, ps, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, κξ, σk, ν)
 end
-
 function iR2Solver(
   x0::S,
   options::ROSolverOptions,
   params::iR2RegParams,
   l_bound::S,
   u_bound::S;
-) where {R <: Real, S <: AbstractVector{R}}
+) where {S <: AbstractVector}
   maxIter = options.maxIter
   Π = params.Π
-  xk = [Vector{R}(undef, length(x0)) for R in Π]
-  gfk = [Vector{R}(undef, length(x0)) for R in Π]
-  fk = [zero(R) for R in Π]
-  hk = [zero(R) for R in Π]
-  sk = [Vector{R}(undef, length(x0)) for R in Π]
-  mν∇fk = [Vector{R}(undef, length(x0)) for R in Π]
+  R = eltype(x0)
+  xk = [Vector{eltype(T)}(undef, length(x0)) for T in Π]
+  gfk = [Vector{eltype(T)}(undef, length(x0)) for T in Π]
+  fk = [zero(eltype(T)) for T in Π]
+  hk = [zero(eltype(T)) for T in Π]
+  sk = [Vector{eltype(T)}(undef, length(x0)) for T in Π]
+  mν∇fk = [Vector{eltype(T)}(undef, length(x0)) for T in Π]
   xkn = similar(x0)
   has_bnds = any(l_bound .!= R(-Inf)) || any(u_bound .!= R(Inf))
   if has_bnds
     l_bound_m_x = similar(x0)
-    
     u_bound_m_x = similar(x0)
   else
     l_bound_m_x = similar(x0, 0)
@@ -97,6 +221,7 @@ function iR2Solver(
     ψ
   )
 end
+
 
 
 """
@@ -151,14 +276,14 @@ function iR2(
 )
   kwargs_dict = Dict(kwargs...)
   x0 = pop!(kwargs_dict, :x0, nlp.meta.x0)
-    x, k, outdict = iR2(
-    t -> obj(nlp, t),
-    (g, t) -> grad!(nlp, t, g),
-    args...,
-    x0,
-    nlp.meta.lvar,
-    nlp.meta.uvar;
-    kwargs_dict...
+  x, k, outdict = iR2(
+  t -> obj(nlp, t),
+  (g, t) -> grad!(nlp, t, g),
+  args...,
+  x0,
+  nlp.meta.lvar,
+  nlp.meta.uvar;
+  kwargs_dict...
   )
   
   ξ = outdict[:ξ]
@@ -220,7 +345,7 @@ function iR2(
   ∇f!::G,
   h::H,
   options::ROSolverOptions{R},
-  params::iR2RegParams,
+  params::iR2RegParams, #TODO : commentaire DO : "autodocumentation" ? 
   x0::AbstractVector{S},
   l_bound::AbstractVector{S},
   u_bound::AbstractVector{S};
@@ -273,7 +398,7 @@ function iR2!(
   γ = options.γ
 
   if p.activate_mp
-    test_κ(p.κs, p.κf, p.κ∇, p.κh, η1, η2)
+    check_κ_valid(p.κs, p.κf, p.κ∇, p.κh, η1, η2)
   end  
 
   Π = p.Π
@@ -336,11 +461,11 @@ function iR2!(
   p.ν = 1 / p.σk
   sqrt_ξ_νInv = one(R)
 
-  fxk = f(solver.xk[p.pf])
-  solver.special_counters[:f][p.pf] += 1
+  fxk = f(solver.xk[p.pf]) # ici, on calcule f(xk) en la précision pf (la + basse initialement).
+  solver.special_counters[:f][p.pf] += 1 # on incrémente le compteur de f en la précision pf.
   for i=1:P
-    solver.fk[i] = Π[i].(fxk)
-  end
+    solver.fk[i] = Π[i](fxk) # on met à jour fk en les précisions de Π. Exemple : fxk est en float16 à l'itération 0, on caste fxk en float32 et float64 pour les autres précisions et on les ajoute à fk
+  end # Q: est-ce que on recalcule quelquechose en faisant Float16(fxk) sachant que fxk est déjà en float16 ?
 
   ∇f!(solver.gfk[p.pg], solver.xk[p.pg])
   solver.special_counters[:∇f][p.pg] += 1
@@ -448,8 +573,8 @@ function iR2!(
       end
       
       for i=1:P
-        solver.fk[i] = Π[i].(fkn)
-        solver.hk[i] = Π[i].(hkn)
+        solver.fk[i] = Π[i](fkn)
+        solver.hk[i] = Π[i](hkn)
       end
 
       ∇f!(solver.gfk[p.pg], solver.xk[p.pg])
