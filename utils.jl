@@ -1,5 +1,5 @@
 # # Test conditions initiales 
-function test_κ(κs, κf, κ∇, κh, η1, η2)
+function check_κ_valid(κs, κf, κ∇, κh, η1, η2)
    if 1/2*κs*(1- η2) - (2κf + κ∇) ≤ 0
      @error "Initial parameters κs, κf, κg, η2 don't respect convergence conditions."
 
