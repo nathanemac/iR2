@@ -147,7 +147,7 @@ mutable struct iR2RegParams
       precision parameter. The algorithm uses the precision parameter ν = 1/σk
 
 """
-mutable struct iR2RegParams{H<:Real}
+mutable struct iR2RegParams{T<:Real, H<:Real}
   pf::Int
   pg::Int
   ph::Int
@@ -156,16 +156,16 @@ mutable struct iR2RegParams{H<:Real}
   verb::Bool
   activate_mp::Bool
   flags::Vector{Bool}
-  κf::H
-  κh::H
-  κ∇::H
-  κs::H
-  κξ::H
-  σk::H
+  κf::T
+  κh::T
+  κ∇::T
+  κs::T
+  κξ::T
+  σk::H # H is the "Highest" floating point format in Π.
   ν::H
 end
 
-function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1e-4, σk=1., ν=eps(Π[end])^(1/5))
+function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1e-4, σk=Π[end](1.), ν=eps(Π[end])^(1/5))
   return iR2RegParams(pf, pg, ph, ps, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, κξ, σk, ν)
 end
 

@@ -10,9 +10,13 @@ using Plots
 using JSOSolvers
 using OptimizationProblems.ADNLPProblems
 using OptimizationProblems
+using Quadmath
+using RegularizedProblems
 
 include("iR2_Alg MP.jl")
 include("utils.jl")
+include("iR2Reg_lazy.jl")
+include("new_version_R2Reg.jl")
 
 ####################
 # tests sur 1 problème
@@ -20,9 +24,9 @@ nlp = AMPGO20(;n=100, type = Val(Float64), backend=:generic)
 nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.2, -1.345], backend=:generic)
 h = NormL1(1.0)
 options = ROSolverOptions(verbose=1, maxIter = 100, ϵa = 1e-4, ϵr = 1e-4)
-params = iR2RegParams([Float16, Float32, Float64],  verb=false, activate_mp=true, κξ = 1., pf = 1, ps = 1, pg = 1, ph = 1)
+params = iR2RegParams([Float32, Float64, Float128],  verb=false, activate_mp=true, κξ = 1., pf = 1, ps = 1, pg = 1, ph = 1)
 jso_res = RegularizedOptimization.R2(nlp, h, options)
-my_res = iR2(nlp, h, options, params) # launches vanilla R2-Reg (one might add verbose=1 for more verbosity)
+my_res = iR2_lazy(nlp, h, options, params) # launches vanilla R2-Reg (one might add verbose=1 for more verbosity)
 
 
 ####################

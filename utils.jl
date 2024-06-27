@@ -112,7 +112,7 @@ function test_assumption_6(nlp, solver, options, p, Π, k, ξ)
       while ξ < 0 && sqrt_ξ_νInv > options.neg_tol && p.ps < length(Π)
         @info " └──> R2: prox-gradient step should produce a decrease but ξ = $(ξ). Increasing precision on s."
         recompute_prox!(nlp, solver, p, k, Π)
-        φk(d) = dot(solver.gfk[end], d)
+        φk(d) = dot(solver.gfk[p.pg], d)
         mk(d) = φk(d) + solver.ψ(d) # FP format : highest between φk and ψ
   
         mks = mk(solver.sk[p.ps])
@@ -152,7 +152,7 @@ function test_assumption_6(nlp, solver, options, p, Π, k, ξ)
   return ξ
 end
 
-function recompute_grad!(nlp, solver, p, k, Π) # p : current level of precision
+function recompute_grad!(nlp, solver, p, k, Π) 
   if Π[p.pg] == Π[end]
     @warn "maximum precision already reached on ∇f when recomputing gradient at iteration $k."
     return 
