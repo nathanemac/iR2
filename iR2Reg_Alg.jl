@@ -25,7 +25,7 @@ end
 
 
 
-mutable struct iR2Solver{R<:Real, S<:AbstractVector, G <: Union{ShiftedProximableFunction, Nothing}} <: AbstractOptimizationSolver
+mutable struct iR2Solver{R<:Real, S<:AbstractVector} <: AbstractOptimizationSolver #G <: Union{ShiftedProximableFunction, Nothing}
   xk::Vector{S}
   mν∇fk::Vector{S}
   gfk::Vector{S}
@@ -43,7 +43,7 @@ mutable struct iR2Solver{R<:Real, S<:AbstractVector, G <: Union{ShiftedProximabl
   Complex_hist::Vector{Int}
   p_hist::Vector{Vector{Int}}
   special_counters::Dict{Symbol, Vector{Int}}
-  ψ::G
+  ψ#::G
   params::iR2RegParams
 end
 
@@ -74,9 +74,9 @@ function iR2Solver(
     l_bound_m_x = similar(x0, 0)
     u_bound_m_x = similar(x0, 0)
   end
-  Fobj_hist = zeros(R, max_iter)
-  Hobj_hist = zeros(R, max_iter)
-  Complex_hist = zeros(Int, max_iter)
+  Fobj_hist = zeros(R, max_iter+2)
+  Hobj_hist = zeros(R, max_iter+2)
+  Complex_hist = zeros(Int, max_iter+2)
   p_hist = [zeros(Int, 4) for _ in 1:max_iter]
   special_counters = Dict(:f => zeros(Int, length(Π)), :h => zeros(Int, length(Π)), :∇f => zeros(Int, length(Π)), :prox => zeros(Int, length(Π)))
   ψ = has_bnds ? shifted(reg_nlp.h, x0, l_bound_m_x, u_bound_m_x, reg_nlp.selected) : shifted(reg_nlp.h, x0)
@@ -299,6 +299,7 @@ function solve!(
   stats::GenericExecutionStats{T, V},
   options::ROSolverOptions{T};
   callback = (args...) -> nothing,
+  max_eval::Int = -1,
   kwargs...,
   ) where {T, V}
 
@@ -306,18 +307,14 @@ function solve!(
 
   p = solver.params
 
-  # start_time = time()
-  elapsed_time = 0.0
   ϵ = options.ϵa
   ϵr = options.ϵr
   neg_tol = options.neg_tol
   verbose = options.verbose
   max_iter = options.maxIter
-  maxTime = options.maxTime
-  σmin = options.σmin
+  max_time = options.maxTime
   η1 = options.η1
   η2 = options.η2
-  ν = options.ν
   γ = options.γ
   x0 = reg_nlp.model.meta.x0
 
@@ -359,6 +356,7 @@ function solve!(
   end
 
   # initialize parameters
+  improper = false
   hxk = @views h(solver.xk[p.ph][selected]) # ph = 1 au début
   solver.special_counters[:h][p.ph] += 1
   if hxk == Inf
@@ -371,10 +369,10 @@ function solve!(
       return 1, status, solver.fk[end], solver.hk[end], Inf, [p.pf, p.pg, p.ph, p.ps]
     end
   end
-  hxk == -Inf && error("nonsmooth term is not proper")
   for i=1:P 
     solver.hk[i] = Π[i].(hxk)
   end
+  improper = (solver.hk[end] == -Inf)
 
   if verbose > 0
     @info log_header(
@@ -396,8 +394,8 @@ function solve!(
   end
 
   local ξ
-
-  p.σk = max(1 / p.ν, σmin)
+  p.σk = max(1 / p.ν, options.σmin)
+  
   p.ν = 1 / p.σk
   sqrt_ξ_νInv = 1.0
 
@@ -417,25 +415,28 @@ function solve!(
   set_iter!(stats, 0)
   start_time = time()
   set_time!(stats, 0.0)
-  set_objective!(stats, fxk + hxk) # TODO maybe change this to avoid casting
-  set_solver_specific!(stats,:smooth_obj,fxk)
-  set_solver_specific!(stats,:nonsmooth_obj, hxk)
+  set_objective!(stats, T(solver.fk[end]) + T(solver.hk[end])) # TODO maybe change this to avoid casting
+  set_solver_specific!(stats,:smooth_obj, T(solver.fk[end]))
+  set_solver_specific!(stats,:nonsmooth_obj, T(solver.hk[end]))
   h = NormL1(Π[p.ps](1.0)) # need to redefine h at each iteration because when shifting: MethodError: no method matching shifted(::NormL1{Float64}, ::Vector{Float16}) so the norm and the shift vector must be same FP Format. 
   solver.ψ = shifted(h, solver.xk[p.ps]) # therefore ψ FP format is s FP format
-  φk(d) = dot(gfk[p.pg], d)   
+  φk(d) = dot(solver.gfk[p.ps], d)   
   mk(d) = φk(d) + solver.ψ(d)
-  prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps](ν))
-  println("solver.sk[p.ps] = ", solver.sk[p.ps])
-  mks = mk(s)
+  prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps](p.ν))
+  for i=1:P
+    solver.sk[i] .= solver.sk[p.ps] 
+  end
 
-  ξ = hk - mks + max(1, abs(hk)) * 10 * eps()
-  ξ > 0 || error("R2: prox-gradient step should produce a decrease but ξ = $(ξ)")
-  sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / ν) : sqrt(-ξ / ν)
+  mks = mk(solver.sk[p.ps]) # on evite les casts en mettant tout en la précision de s
+
+  ξ = solver.hk[p.ps] - mks + max(1, abs(solver.hk[p.ps])) * 10 * eps(Π[p.ps]) # on evite les casts en mettant tout en la précision de s
+  ξ > 0 || error("R2: prox-gradient step should produce a decrease but ξ = $(ξ)") # TODO : est-ce que ξ est pas mieux en H ? 
+  sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
   ϵ += ϵr * sqrt_ξ_νInv # make stopping test absolute and relative
 
   set_solver_specific!(stats, :xi, sqrt_ξ_νInv)
 
-  solved = (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ atol)
+  solved = (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ * sqrt(p.κξ))
   set_status!(
     stats,
     get_status(
@@ -456,24 +457,24 @@ function solve!(
 
   # Implémentation d'une fonction qui s'occupe de la boucle principale de l'algo :
 
-  function inner_loop!(solver, stats, options, p, Π, verbose, max_iter, max_time, σmin, η1, η2, γ)
+  function inner_loop!(solver, stats, options, selected, h, p, Π, sqrt_ξ_νInv, verbose, max_iter, max_time, η1, η2, γ, start_time, T, P)
 
     while !done
       # Update xk, sigma_k
-      solver.xkn .= solver.xk[ps] .+ solver.sk[p.ps]
+      solver.xkn .= solver.xk[p.ps] .+ solver.sk[p.ps]
       fkn = obj(nlp, solver.xkn)
       hkn = @views h(solver.xkn[selected])
       improper = (hkn == -Inf)
 
-      Δobj = (fk[end] + hk[end]) - (fkn + hkn) + max(1, abs(fk + hk)) * 10 * eps()
-      global ρk = Δobj / ξ
+      Δobj = (solver.fk[end] + solver.hk[end]) - (fkn + hkn) + max(1, abs(solver.fk[end] + solver.hk[end])) * 10 * eps(Π[end])
+      global ρk = Δobj / ξ  
 
       verbose > 0 && 
       stats.iter % verbose == 0 &&
-      @info log_row(Any[stats.iter, fk, hk, sqrt_ξ_νInv, ρk, σk, norm(xk), norm(s), (η2 ≤ ρk < Inf) ? "↘" : (ρk < η1 ? "↗" : "=")], colsep = 1)
+      @info log_row(Any[stats.iter, solver.fk[end], solver.hk[end], sqrt_ξ_νInv, ρk, p.σk, norm(solver.xk[end]), norm(solver.sk[end]), (η2 ≤ ρk < Inf) ? "↘" : (ρk < η1 ? "↗" : "=")], colsep = 1)
 
       if η1 ≤ ρk < Inf
-        xk .= xkn
+        solver.xk[p.ps] .= solver.xkn
         if has_bnds #TODO
           @error "Not implemented yet"
           @. l_bound_m_x = l_bound - xk[end]
@@ -485,42 +486,51 @@ function solve!(
         grad!(nlp, solver.xk[p.pg], solver.gfk[p.pg])
         shift!(solver.ψ, solver.xk[p.ps])
         for i=1:P
-          solver.fk[i] .= solver.fk[p.pf] # on met à jour fk en les précisions de Π. Exemple : fxk est en float16 à l'itération 0, on caste fxk en float32 et float64 pour les autres précisions et on les ajoute à fk
+          solver.xk[i] .= solver.xk[p.ps] # on met à jour fk en les précisions de Π. Exemple : fxk est en float16 à l'itération 0, on caste fxk en float32 et float64 pour les autres précisions et on les ajoute à fk
         end
         for i=1:P
-          solver.hk[i] .= solver.fk[p.ph] # on met à jour fk en les précisions de Π. Exemple : fxk est en float16 à l'itération 0, on caste fxk en float32 et float64 pour les autres précisions et on les ajoute à fk
+          solver.fk[i] = solver.fk[p.pf] # on met à jour fk en les précisions de Π. Exemple : fxk est en float16 à l'itération 0, on caste fxk en float32 et float64 pour les autres précisions et on les ajoute à fk
+        end
+        for i=1:P
+          solver.hk[i] = solver.hk[p.ph] # on met à jour fk en les précisions de Π. Exemple : fxk est en float16 à l'itération 0, on caste fxk en float32 et float64 pour les autres précisions et on les ajoute à fk
         end  
         for i=1:P 
           solver.gfk[i] .= solver.gfk[p.pg]
-          solver.mν∇fk[i] .= -Π[end].(p.ν) * solver.gfk[i] 
         end
       end
 
       if η2 ≤ ρk < Inf
-        p.σk = max(p.σk / options.γ, options.σmin)
+        p.σk = max(p.σk / γ, options.σmin)
       end
       if ρk < η1 || ρk == Inf
         p.σk = p.σk * γ
       end
       p.ν = 1 / p.σk
+      for i=1:P
+        solver.mν∇fk[i] .= -p.ν * solver.gfk[i]
+      end
+      for i=1:P
+        solver.sk[i] .= solver.sk[p.ps] 
+      end
 
 
-      set_objective!(stats, fk + hk)
-      set_solver_specific!(stats,:smooth_obj,fk)
-      set_solver_specific!(stats,:nonsmooth_obj, hk)
+      set_objective!(stats, T(solver.fk[end] + solver.hk[end]))
+      set_solver_specific!(stats,:smooth_obj, solver.fk[end])
+      set_solver_specific!(stats,:nonsmooth_obj, solver.hk[end])
       set_iter!(stats, stats.iter + 1)
       set_time!(stats, time() - start_time)
 
-      φk(d) = dot(solver.gfk[p.pg], d)   
+      φk(d) = dot(solver.gfk[p.ps], d)   
       mk(d) = φk(d) + solver.ψ(d)
-      prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], ν)
-      mks = mk(s)
-      ξ = hk - mks + max(1, abs(hk)) * 10 * eps()
+      prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps](p.ν))
 
-      sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / ν) : sqrt(-ξ / ν)
-      solved = (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ atol)
+      mks = mk(solver.sk[p.ps]) # on evite les casts en mettant tout en la précision de s
+      ξ = solver.hk[p.ps] - mks + max(1, abs(solver.hk[p.ps])) * 10 * eps(Π[p.ps]) # on evite les casts en mettant tout en la précision de s
 
-      set_solver_specific!(stats,:xi,sqrt_ξ_νInv)
+      sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
+      solved = (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ * sqrt(p.κξ))
+
+      set_solver_specific!(stats, :xi, sqrt_ξ_νInv)
       set_status!(
       stats,
       get_status(
@@ -539,15 +549,18 @@ function solve!(
 
       done = stats.status != :unknown
     end
+  end
+
+  inner_loop!(solver, stats, options, selected, h, p, Π, sqrt_ξ_νInv, verbose, max_iter, max_time, η1, η2, γ, start_time, T, P)
 
     verbose > 0 &&
-    stats.status == :first_order &&
-      @info log_row(Any[stats.iter, fk, hk, sqrt_ξ_νInv, ρk, σk, norm(xk), norm(s), (η2 ≤ ρk < Inf) ? "↘" : (ρk < η1 ? "↗" : "=")], colsep = 1)
+    if stats.status == :first_order
+      @info log_row(Any[stats.iter, solver.fk[end], solver.hk[end], sqrt_ξ_νInv, ρk, p.σk, norm(solver.xk[end]), norm(solver.sk[end]), (η2 ≤ ρk < Inf) ? "↘" : (ρk < η1 ? "↗" : "=")], colsep = 1)
       @info "R2: terminating with √(ξ/ν) = $(sqrt_ξ_νInv)"
+    end
 
-    set_solution!(stats,xk)
+    set_solution!(stats, solver.xk[end])
     return stats
-  end
 end
 
 #       # define model
