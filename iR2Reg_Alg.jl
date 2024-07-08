@@ -1,5 +1,5 @@
 import SolverCore.solve!
-
+# ce code est le code principal de l'algorithme iR2-Reg. 
 mutable struct iR2RegParams{T<:Real, H<:Real}
   pf::Int
   pg::Int
@@ -14,16 +14,20 @@ mutable struct iR2RegParams{T<:Real, H<:Real}
   κ∇::T
   κs::T
   κξ::T
-  σk::H # H is the "Highest" floating point format in Π.
+  H # H is the "Highest" floating point format in Π.
+  σk::H 
   ν::H
 end
 
-
-function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1e-4, σk=Π[end](1.), ν=eps(Π[end])^(1/5))
-  return iR2RegParams(pf, pg, ph, ps, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, κξ, σk, ν)
+function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1., H=Float128, σk=H(1.), ν=eps(H)^(1/5))
+  if length(Π) == 0
+    error("Π must be a non-empty vector of floating point types")
+  end
+  if Π[end] == H
+    @warn "Highest precision format in the algorithm and highest precision format in Π are the same (Float128). \n This may lead to unexpected behavior. \n Please consider changing the highest precision format in Π to a lower precision format, or changing the highest precision format in the algorithm to a higher precision format."
+  end
+  return iR2RegParams(pf, pg, ph, ps, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, κξ, H, σk, ν)
 end
-
-
 
 mutable struct iR2Solver{R<:Real, S<:AbstractVector} <: AbstractOptimizationSolver #G <: Union{ShiftedProximableFunction, Nothing}
   xk::Vector{S}
@@ -54,17 +58,18 @@ function iR2Solver(
   options::ROSolverOptions,
 ) where {T, V}
   x0 = reg_nlp.model.meta.x0
+  nvar = length(x0)
   l_bound = reg_nlp.model.meta.lvar
   u_bound = reg_nlp.model.meta.uvar
   max_iter = options.maxIter
   Π = params.Π
   R = eltype(x0)
-  xk = [Vector{eltype(T)}(undef, length(x0)) for T in Π]
-  gfk = [Vector{eltype(T)}(undef, length(x0)) for T in Π]
+  xk = [Vector{eltype(T)}(undef, nvar) for T in Π]
+  gfk = [Vector{eltype(T)}(undef, nvar) for T in Π]
   fk = [zero(eltype(T)) for T in Π]
   hk = [zero(eltype(T)) for T in Π]
-  sk = [Vector{eltype(T)}(undef, length(x0)) for T in Π]
-  mν∇fk = [Vector{eltype(T)}(undef, length(x0)) for T in Π]
+  sk = [Vector{eltype(T)}(undef, nvar) for T in Π]
+  mν∇fk = [Vector{eltype(T)}(undef, nvar) for T in Π]
   xkn = similar(x0)
   has_bnds = any(l_bound .!= R(-Inf)) || any(u_bound .!= R(Inf))
   if has_bnds
@@ -171,103 +176,10 @@ function iR2_lazy(
     σmin = options.σmin,
     η1 = options.η1,
     η2 = options.η2,
-    ν = options.ν,
+    ν = params.ν,
     γ = options.γ,
   )
   return stats
-end
-
-function iR2_lazy(
-  f::F,
-  ∇f!::G,
-  h::H,
-  options::ROSolverOptions{R},
-  x0::AbstractVector{R};
-  selected::AbstractVector{<:Integer} = 1:length(x0),
-  kwargs...,
-) where {F <: Function, G <: Function, H, R <: Real}
-  nlp = FirstOrderModel(f,∇f!,x0)
-  reg_nlp = RegularizedNLPModel(nlp,h,selected) 
-  stats = iR2_lazy(
-  reg_nlp,
-  params,
-  options, 
-  x=x0,
-  atol = options.ϵa,
-  rtol = options.ϵr,
-  neg_tol = options.neg_tol,
-  verbose = options.verbose,
-  max_iter = options.max_iter,
-  max_time = options.maxTime,
-  σmin = options.σmin,
-  η1 = options.η1,
-  η2 = options.η2,
-  ν = options.ν,
-  γ = options.γ,
-  )
-  outdict = Dict(
-     :Fhist => stats.solver_specific[:Fhist],
-     :Hhist => stats.solver_specific[:Hhist],
-     :Chist => stats.solver_specific[:SubsolverCounter],
-     :NonSmooth => h,
-     :status => stats.status,
-     :fk => stats.solver_specific[:smooth_obj],
-     :hk => stats.solver_specific[:nonsmooth_obj],
-     :ξ => stats.solver_specific[:xi],
-     :elapsed_time => stats.elapsed_time,
-     :p_hist => stats.solver_specific[:p_hist],
-     :special_counters => stats.solver_specific[:special_counters],
-   )
-  
-return stats.solution,stats.iter,outdict
-end
-
-function iR2_lazy(
-  f::F,
-  ∇f!::G,
-  h::H,
-  options::ROSolverOptions{R},
-  params::iR2RegParams,
-  x0::AbstractVector{R},
-  l_bound::AbstractVector{R},
-  u_bound::AbstractVector{R};
-  selected::AbstractVector{<:Integer} = 1:length(x0),
-  kwargs...,
-) where {F <: Function, G <: Function, H, R <: Real}
-  nlp = FirstOrderModel(f,∇f!,x0,lcon = l_bound, ucon = u_bound)
-  reg_nlp = RegularizedNLPModel(nlp,h,selected) 
-  stats = iR2_lazy(
-  reg_nlp,
-  params, 
-  options,
-  x=x0,
-  atol = options.ϵa,
-  rtol = options.ϵr,
-  neg_tol = options.neg_tol,
-  verbose = options.verbose,
-  max_iter = options.max_iter,
-  max_time = options.maxTime,
-  σmin = options.σmin,
-  η1 = options.η1,
-  η2 = options.η2,
-  ν = options.ν,
-  γ = options.γ,
-)
-  outdict = Dict(
-     :Fhist => stats.solver_specific[:Fhist],
-     :Hhist => stats.solver_specific[:Hhist],
-     :Chist => stats.solver_specific[:SubsolverCounter],
-     :NonSmooth => h,
-     :status => stats.status,
-     :fk => stats.solver_specific[:smooth_obj],
-     :hk => stats.solver_specific[:nonsmooth_obj],
-     :ξ => stats.solver_specific[:xi],
-     :elapsed_time => stats.elapsed_time,
-     :p_hist => stats.solver_specific[:p_hist],
-     :special_counters => stats.solver_specific[:special_counters],
-   )
-  
-return stats.solution,stats.iter,outdict
 end
 
 function iR2_lazy(reg_nlp::AbstractRegularizedNLPModel, params::iR2RegParams, options::ROSolverOptions; kwargs...)
@@ -322,7 +234,6 @@ function solve!(
   h = reg_nlp.h
   nlp = reg_nlp.model
   
-
   if p.activate_mp
     check_κ_valid(p.κs, p.κf, p.κ∇, p.κh, η1, η2)
   end  
@@ -340,7 +251,7 @@ function solve!(
     l_bound_m_x = solver.l_bound_m_x
     u_bound_m_x = solver.u_bound_m_x
   end
-  Fobj_hist = solver.Fobj_hist
+  Fobj_hist = solver.Fobj_hist 
   Hobj_hist = solver.Hobj_hist
   Complex_hist = solver.Complex_hist
   p_hist = solver.p_hist
@@ -397,7 +308,7 @@ function solve!(
   p.σk = max(1 / p.ν, options.σmin)
   
   p.ν = 1 / p.σk
-  sqrt_ξ_νInv = 1.0
+  sqrt_ξ_νInv = Π[end](1.0)
 
   fxk = obj(nlp, solver.xk[p.pf]) 
   solver.special_counters[:f][p.pf] += 1 # on incrémente le compteur de f en la précision pf.
@@ -430,10 +341,14 @@ function solve!(
   mks = mk(solver.sk[p.ps]) # on evite les casts en mettant tout en la précision de s
 
   ξ = solver.hk[p.ps] - mks + max(1, abs(solver.hk[p.ps])) * 10 * eps(Π[p.ps]) # on evite les casts en mettant tout en la précision de s
-  ξ > 0 || error("R2: prox-gradient step should produce a decrease but ξ = $(ξ)") # TODO : est-ce que ξ est pas mieux en H ? 
+  ξ > 0 || error("R2: prox-gradient step should produce a decrease but ξ = $(ξ)")
   sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
   ϵ += ϵr * sqrt_ξ_νInv # make stopping test absolute and relative
 
+  # first check of accuracy conditions here:
+  if p.activate_mp
+    test_condition_f(nlp, solver, p, Π, stats.iter)
+  end
   set_solver_specific!(stats, :xi, sqrt_ξ_νInv)
 
   solved = (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ * sqrt(p.κξ))
@@ -456,24 +371,23 @@ function solve!(
   done = stats.status != :unknown
 
   # Implémentation d'une fonction qui s'occupe de la boucle principale de l'algo :
-
   function inner_loop!(solver, stats, options, selected, h, p, Π, sqrt_ξ_νInv, verbose, max_iter, max_time, η1, η2, γ, start_time, T, P)
 
     while !done
       # Update xk, sigma_k
-      solver.xkn .= solver.xk[p.ps] .+ solver.sk[p.ps]
+      solver.xkn .= solver.xk[end] .+ solver.sk[end] 
       fkn = obj(nlp, solver.xkn)
       hkn = @views h(solver.xkn[selected])
       improper = (hkn == -Inf)
 
-      Δobj = (solver.fk[end] + solver.hk[end]) - (fkn + hkn) + max(1, abs(solver.fk[end] + solver.hk[end])) * 10 * eps(Π[end])
-      global ρk = Δobj / ξ  
+      Δobj = (p.H(solver.fk[end]) + p.H(solver.hk[end])) - (p.H(fkn) + p.H(hkn)) + max(1, abs(p.H(solver.fk[end]) + p.H(solver.hk[end]))) * 10 * eps(p.H) # casté en haute précision pour éviter les erreurs d'arrondis
+      global ρk = Δobj / ξ  # ρk est en la precision de Δobj donc H
 
       verbose > 0 && 
       stats.iter % verbose == 0 &&
       @info log_row(Any[stats.iter, solver.fk[end], solver.hk[end], sqrt_ξ_νInv, ρk, p.σk, norm(solver.xk[end]), norm(solver.sk[end]), (η2 ≤ ρk < Inf) ? "↘" : (ρk < η1 ? "↗" : "=")], colsep = 1)
 
-      if η1 ≤ ρk < Inf
+      if η1 ≤ ρk < Inf # success
         solver.xk[p.ps] .= solver.xkn
         if has_bnds #TODO
           @error "Not implemented yet"
@@ -487,14 +401,8 @@ function solve!(
         shift!(solver.ψ, solver.xk[p.ps])
         for i=1:P
           solver.xk[i] .= solver.xk[p.ps] # on met à jour fk en les précisions de Π. Exemple : fxk est en float16 à l'itération 0, on caste fxk en float32 et float64 pour les autres précisions et on les ajoute à fk
-        end
-        for i=1:P
-          solver.fk[i] = solver.fk[p.pf] # on met à jour fk en les précisions de Π. Exemple : fxk est en float16 à l'itération 0, on caste fxk en float32 et float64 pour les autres précisions et on les ajoute à fk
-        end
-        for i=1:P
-          solver.hk[i] = solver.hk[p.ph] # on met à jour fk en les précisions de Π. Exemple : fxk est en float16 à l'itération 0, on caste fxk en float32 et float64 pour les autres précisions et on les ajoute à fk
-        end  
-        for i=1:P 
+          solver.fk[i] = solver.fk[p.pf]
+          solver.hk[i] = solver.hk[p.ph] 
           solver.gfk[i] .= solver.gfk[p.pg]
         end
       end
@@ -508,8 +416,6 @@ function solve!(
       p.ν = 1 / p.σk
       for i=1:P
         solver.mν∇fk[i] .= -p.ν * solver.gfk[i]
-      end
-      for i=1:P
         solver.sk[i] .= solver.sk[p.ps] 
       end
 
@@ -517,9 +423,11 @@ function solve!(
       set_objective!(stats, T(solver.fk[end] + solver.hk[end]))
       set_solver_specific!(stats,:smooth_obj, solver.fk[end])
       set_solver_specific!(stats,:nonsmooth_obj, solver.hk[end])
+      set_solver_specific!(stats,:π_Hist, p_hist)
       set_iter!(stats, stats.iter + 1)
       set_time!(stats, time() - start_time)
 
+      # new step start here
       φk(d) = dot(solver.gfk[p.ps], d)   
       mk(d) = φk(d) + solver.ψ(d)
       prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps](p.ν))
@@ -562,6 +470,14 @@ function solve!(
     set_solution!(stats, solver.xk[end])
     return stats
 end
+
+
+#TODOs : 
+# 1) ajouter et màj les compteurs d'evaluation dans chaque precision + π_Hist
+# 2) Modifier le fait qu'on puisse passer que NormL1 pour h 
+
+
+
 
 #       # define model
 #       if solver.has_bnds #TODO updatde this later 
@@ -709,30 +625,3 @@ end
 #   end
 #   return k, status, solver.fk[end], solver.hk[end], sqrt_ξ_νInv, [p.pf, p.pg, p.ph, p.ps]
 # end
-
-
-
-function get_status(
-  reg_nlp;
-  elapsed_time = 0.0,
-  iter = 0,
-  optimal = false,
-  improper = false,
-  max_eval = Inf,
-  max_time = Inf,
-  max_iter = Inf,
-)
-  if optimal
-    :first_order
-  elseif improper
-    :improper
-  elseif iter > max_iter
-    :max_iter
-  elseif elapsed_time > max_time
-    :max_time
-  elseif neval_obj(reg_nlp.model) > max_eval && max_eval != -1
-    :max_eval
-  else
-    :unknown
-  end
-end

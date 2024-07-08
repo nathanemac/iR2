@@ -1,10 +1,10 @@
 # # Test conditions initiales 
 function check_κ_valid(κs, κf, κ∇, κh, η1, η2)
    if 1/2*κs*(1- η2) - (2κf + κ∇) ≤ 0
-     @error "Initial parameters κs, κf, κg, η2 don't respect convergence conditions."
+     @error "Initial parameters κs, κf, κg, η2 don't respect convergence conditions : \n 1/2*κs*(1- η2) - (2κf + κ∇) ≤ 0"
 
    elseif 1/2*κs*η1 - 2(κf + κh) ≤ 0
-     @error "Initial parameters κs, κf, κh, η1 don't respect convergence conditions."
+     @error "Initial parameters κs, κf, κh, η1 don't respect convergence conditions. \n 1/2*κs*η1 - 2(κf + κh) ≤ 0"
    end
  end
 
@@ -13,13 +13,13 @@ function check_κ_valid(κs, κf, κ∇, κh, η1, η2)
 ######################################################
 
 function test_condition_f(nlp, solver, p, Π, k)
-  while abs(solver.fk[p.pf])*(1- 1/(1 + eps(Π[p.pf]))) > p.κf*p.σk*norm(solver.sk[p.ps])^2
+  while abs(p.H(solver.fk[p.pf])) * (1 - 1 / p.H((1 + eps(Π[p.pf])))) > p.κf * p.σk * norm(p.H.(solver.sk[p.ps]))^2 
     if ((Π[p.pf] == Π[end]) && (Π[p.ps] == Π[end]))
       if (p.flags[1] == false)
         @warn "maximum precision already reached on f and s at iteration $k."
         p.flags[1] = true
       end
-      break # on passe sous le tapis pour les fois d'après que la condition passe pas.
+      break # on passe sous le tapis pour les fois d'après que la condition passe pas grâce à flags[1]
     end
     p.verb == true && @info "condition on f not reached at iteration $k with precision $(Π[p.pf]) on f and $(Π[p.ps]) on s. Increasing precision : "
     if Π[p.pf] == Π[end]
@@ -27,10 +27,10 @@ function test_condition_f(nlp, solver, p, Π, k)
       recompute_prox!(nlp, solver, p, k, Π)
     else
       p.pf+=1
-      solver.fk[p.pf] = obj(nlp, solver.xk[p.pf])
+      fxk = p.H(obj(nlp, solver.xk[p.pf]))
       solver.special_counters[:f][p.pf] += 1
       for i=1:length(Π)
-        solver.fk[i] = solver.fk[p.pf]
+        solver.fk[i] = Π[i](fxk)
       end
     p.verb == true && @info " └──> current precision on f is now $(Π[p.pf]) and s is $(Π[p.ps])"
     end
@@ -162,7 +162,7 @@ function recompute_grad!(nlp, solver, p, k, Π)
   grad!(nlp, solver.xk[p.pg], solver.gfk[p.pg])
   solver.special_counters[:∇f][p.pg] += 1
   for i=1:length(Π)
-    solver.gfk[i] .= solver.gfk[p.pg]
+    solver.gfk[i] .= solver.gfk[p.pg] # update the containers for the gradient
   end
 
   for i=1:length(Π)
@@ -178,8 +178,8 @@ function recompute_prox!(nlp, solver, p, k, Π)
   # then, recompute proximal operator
   if Π[p.ps] == Π[end]
     @warn "maximum precision already reached on s when recomputing prox at iteration $k."
-    solver.h = NormL1(Π[p.ps](1.0))
-    solver.ψ = shifted(solver.h, solver.xk[p.ps])
+    # solver.h = NormL1(Π[p.ps](1.0)) # useless non ? vu qu'on n'a rien recalculé 
+    # solver.ψ = shifted(solver.h, solver.xk[p.ps]) # useless non ? idem
     return 
   end
 
@@ -187,7 +187,8 @@ function recompute_prox!(nlp, solver, p, k, Π)
 
   solver.h = NormL1(Π[p.ps](1.0))
   hxk = solver.h(solver.xk[p.ps]) #TODO add selected
-  for i=1:length(Π)
+  P = length(Π)
+  for i=1:P
     solver.hk[i] = Π[i].(hxk)
   end
   solver.ψ = shifted(solver.h, solver.xk[p.ps])
@@ -198,4 +199,29 @@ function recompute_prox!(nlp, solver, p, k, Π)
     solver.sk[i] .= solver.sk[p.ps]
   end
   return
+end
+
+function get_status(
+  reg_nlp;
+  elapsed_time = 0.0,
+  iter = 0,
+  optimal = false,
+  improper = false,
+  max_eval = Inf,
+  max_time = Inf,
+  max_iter = Inf,
+)
+  if optimal
+    :first_order
+  elseif improper
+    :improper
+  elseif iter > max_iter
+    :max_iter
+  elseif elapsed_time > max_time
+    :max_time
+  elseif neval_obj(reg_nlp.model) > max_eval && max_eval != -1
+    :max_eval
+  else
+    :unknown
+  end
 end

@@ -1,6 +1,6 @@
 module iR2Solver
 
-export iR2_lazy, iR2Solver, solve!
+export iR2Solver, solve!
 
 import SolverCore.solve!
 
@@ -145,71 +145,6 @@ function iR2_lazy(
     set_solver_specific!(stats, :special_counters, outdict[:special_counters])
     
     return stats
-end
-
-function iR2_lazy(
-    f::F,
-    ∇f!::G,
-    h::H,
-    options::ROSolverOptions{R},
-    params::iR2RegParams,
-    x0::AbstractVector{S};
-    selected::AbstractVector{<:Integer} = 1:length(x0),
-    kwargs...
-) where {F <: Function, G <: Function, H, R <: Real, S <: Real}
-    start_time = time()
-    elapsed_time = 0.0
-    solver = iR2Solver(x0, options, params, similar(x0, 0), similar(x0, 0))
-    k, status, fk, hk, ξ = iR2_lazy!(solver, f, ∇f!, h, options, x0; selected=selected, params=params)
-    elapsed_time = time() - start_time
-    
-    outdict = Dict(
-        :Fhist => solver.Fobj_hist[1:k],
-        :Hhist => solver.Hobj_hist[1:k],
-        :Chist => solver.Complex_hist[1:k],
-        :status => status,
-        :fk => fk,
-        :hk => hk,
-        :ξ => ξ,
-        :elapsed_time => elapsed_time,
-        :p_hist => solver.p_hist[1:k],
-        :special_counters => solver.special_counters
-    )
-    
-    return solver.xk[end], k, outdict
-end
-
-function iR2_lazy(
-    f::F,
-    ∇f!::G,
-    h::H,
-    options::ROSolverOptions{R},
-    p::iR2RegParams,
-    x0::AbstractVector{S},
-    l_bound::AbstractVector{S},
-    u_bound::AbstractVector{S};
-    selected::AbstractVector{<:Integer} = 1:length(x0),
-    kwargs...
-) where {F <: Function, G <: Function, H, R <: Real, S <: Real}
-    start_time = time()
-    elapsed_time = 0.0
-    solver = iR2Solver(x0, options, params, l_bound, u_bound,)
-    k, status, fk, hk, ξ = iR2_lazy!(solver, f, ∇f!, h, options, params, x0; selected=selected)
-    elapsed_time = time() - start_time
-    outdict = Dict(
-        :Fhist => solver.Fobj_hist[1:k],
-        :Hhist => solver.Hobj_hist[1:k],
-        :Chist => solver.Complex_hist[1:k],
-        :status => status,
-        :fk => fk,
-        :hk => hk,
-        :ξ => ξ,
-        :elapsed_time => elapsed_time,
-        :p_hist => solver.p_hist[1:k],
-        :special_counters => solver.special_counters
-    )
-
-    return solver.xk[end], k, outdict
 end
 
 function solve!(
