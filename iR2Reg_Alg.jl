@@ -47,7 +47,9 @@ mutable struct iR2Solver{R<:Real, S<:AbstractVector} <: AbstractOptimizationSolv
   Complex_hist::Vector{Int}
   p_hist::Vector{Vector{Int}}
   special_counters::Dict{Symbol, Vector{Int}}
+  h
   ψ#::G
+  ξ
   params::iR2RegParams
 end
 
@@ -84,7 +86,9 @@ function iR2Solver(
   Complex_hist = zeros(Int, max_iter+2)
   p_hist = [zeros(Int, 4) for _ in 1:max_iter]
   special_counters = Dict(:f => zeros(Int, length(Π)), :h => zeros(Int, length(Π)), :∇f => zeros(Int, length(Π)), :prox => zeros(Int, length(Π)))
+  h = reg_nlp.h
   ψ = has_bnds ? shifted(reg_nlp.h, x0, l_bound_m_x, u_bound_m_x, reg_nlp.selected) : shifted(reg_nlp.h, x0)
+  ξ = one(params.H)
   return iR2Solver(
     xk,
     mν∇fk,
@@ -103,7 +107,9 @@ function iR2Solver(
     Complex_hist,
     p_hist,
     special_counters,
-    ψ, 
+    h,
+    ψ,
+    ξ,
     params
   )
 end
@@ -231,7 +237,7 @@ function solve!(
   x0 = reg_nlp.model.meta.x0
 
   selected = reg_nlp.selected
-  h = reg_nlp.h
+  h = solver.h
   nlp = reg_nlp.model
   
   if p.activate_mp
@@ -340,18 +346,21 @@ function solve!(
 
   mks = mk(solver.sk[p.ps]) # on evite les casts en mettant tout en la précision de s
 
-  ξ = solver.hk[p.ps] - mks + max(1, abs(solver.hk[p.ps])) * 10 * eps(Π[p.ps]) # on evite les casts en mettant tout en la précision de s
-  ξ > 0 || error("R2: prox-gradient step should produce a decrease but ξ = $(ξ)")
-  sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
+  solver.ξ = p.H(solver.hk[p.ps]) - p.H(mks) + p.H(max(1, abs(p.H(solver.hk[p.ps]))) * 10 * eps(p.H)) # on evite les casts en mettant tout en la précision de s. Ensuite, on cast tout en H pour éviter les erreurs d'arrondis.
+  solver.ξ > 0 || error("R2: prox-gradient step should produce a decrease but ξ = $(ξ)")
+  sqrt_ξ_νInv = solver.ξ ≥ 0 ? sqrt(solver.ξ / p.ν) : sqrt(-solver.ξ / p.ν)
   ϵ += ϵr * sqrt_ξ_νInv # make stopping test absolute and relative
 
   # first check of accuracy conditions here:
   if p.activate_mp
     test_condition_f(nlp, solver, p, Π, stats.iter)
+    test_condition_h(nlp, solver, p, Π, stats.iter)
+    test_condition_∇f(nlp, solver, p, Π, stats.iter)
+    test_assumption_6(nlp, solver, options, p, Π, stats.iter)
   end
   set_solver_specific!(stats, :xi, sqrt_ξ_νInv)
 
-  solved = (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ * sqrt(p.κξ))
+  solved = (solver.ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (solver.ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ * sqrt(p.κξ))
   set_status!(
     stats,
     get_status(
@@ -381,7 +390,7 @@ function solve!(
       improper = (hkn == -Inf)
 
       Δobj = (p.H(solver.fk[end]) + p.H(solver.hk[end])) - (p.H(fkn) + p.H(hkn)) + max(1, abs(p.H(solver.fk[end]) + p.H(solver.hk[end]))) * 10 * eps(p.H) # casté en haute précision pour éviter les erreurs d'arrondis
-      global ρk = Δobj / ξ  # ρk est en la precision de Δobj donc H
+      global ρk = Δobj / solver.ξ  # ρk est en la precision de Δobj donc H
 
       verbose > 0 && 
       stats.iter % verbose == 0 &&
@@ -427,17 +436,21 @@ function solve!(
       set_iter!(stats, stats.iter + 1)
       set_time!(stats, time() - start_time)
 
-      # new step start here
+      # new step starts here
       φk(d) = dot(solver.gfk[p.ps], d)   
       mk(d) = φk(d) + solver.ψ(d)
       prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps](p.ν))
-
       mks = mk(solver.sk[p.ps]) # on evite les casts en mettant tout en la précision de s
-      ξ = solver.hk[p.ps] - mks + max(1, abs(solver.hk[p.ps])) * 10 * eps(Π[p.ps]) # on evite les casts en mettant tout en la précision de s
+      solver.ξ = p.H(solver.hk[p.ps]) - p.H(mks) + p.H(max(1, abs(p.H(solver.hk[p.ps]))) * 10 * eps(p.H)) # on evite les casts en mettant tout en la précision de s. Ensuite, on cast tout en H pour éviter les erreurs d'arrondis.
+      print
+      if p.activate_mp
+        test_condition_f(nlp, solver, p, Π, stats.iter)
+        test_condition_h(nlp, solver, p, Π, stats.iter)
+        test_condition_∇f(nlp, solver, p, Π, stats.iter)
+      end
 
-      sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
-      solved = (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ * sqrt(p.κξ))
-
+      sqrt_ξ_νInv = solver.ξ ≥ 0 ? sqrt(solver.ξ / p.ν) : sqrt(-solver.ξ / p.ν)
+      solved = (solver.ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (solver.ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ * sqrt(p.κξ))
       set_solver_specific!(stats, :xi, sqrt_ξ_νInv)
       set_status!(
       stats,

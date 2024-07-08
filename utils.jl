@@ -39,7 +39,7 @@ function test_condition_f(nlp, solver, p, Π, k)
 end
 
 function test_condition_h(nlp, solver, p, Π, k) # p : current level of precision
-  while abs(solver.hk[p.ph])*(1- 1/(1 + eps(Π[p.ph]))) > p.κh*p.σk*norm(solver.sk[p.ps])^2
+  while abs(p.H(solver.hk[p.ph])) * (1- 1 / p.H(1 + eps(Π[p.ph]))) > p.κh * p.σk * norm(p.H.(solver.sk[p.ps]))^2
     if (Π[p.ph] == Π[end]) && (Π[p.ps] == Π[end])
       if (p.flags[2] == false)
         @warn "maximum precision already reached on h and s for condition on h at iteration $k."
@@ -66,7 +66,7 @@ end
 
 
 function test_condition_∇f(nlp, solver, p, Π, k)
-  while abs(dot(solver.gfk[p.pg], solver.sk[p.ps]))*(1- 1/(1 + eps(Π[p.pg]))) > p.κ∇*p.σk*norm(solver.sk[p.ps])
+  while abs(dot(p.H.(solver.gfk[p.pg]), p.H.(solver.sk[p.ps]))) * (1- 1 / p.H(1 + eps(Π[p.pg]))) > p.κ∇ * p.σk * norm(p.H.(solver.sk[p.ps]))
     if (Π[p.pg] == Π[end]) && (Π[p.ps] == Π[end])
       if (p.flags[3] == false)
         @warn "maximum precision already reached on ∇f and s for condition on ∇f at iteration $k."
@@ -88,9 +88,9 @@ end
 
 
 # check assumption 6
-function test_assumption_6(nlp, solver, options, p, Π, k, ξ)
-  while ξ < 1/2*p.κs*p.σk*norm(solver.sk[p.ps])^2 
-    if (Π[p.ps] == Π[end]) && (Π[p.ph] == Π[end])
+function test_assumption_6(nlp, solver, options, p, Π, k)
+  while solver.ξ < 1/2 * p.κs * p.σk * norm(p.H.(solver.sk[p.ps]))^2 
+    if (Π[p.ps] == Π[end]) && (Π[p.ph] == Π[end]) # on a atteint la précision maximale sur les 2 variables h et s
       if (p.flags[2] == false)
         @warn "maximum precision already reached on f and s for Assumption 6 at iteration $k."
         p.flags[2] = true
@@ -99,57 +99,54 @@ function test_assumption_6(nlp, solver, options, p, Π, k, ξ)
     end
 
     p.verb == true && @info "condition on Assumption 6 not reached at iteration $k with precision $(Π[p.ps]) on s and $(Π[p.ph]) on h. Increasing precision : "
-    if Π[p.ph] == Π[end]
+    if Π[p.ph] == Π[end] # on augmente la précision sur s
       p.verb == true && @info " └──> maximum precision already reached on h to satisfy Assumption 6. Trying to increase precision on s."
 
-      recompute_prox!(nlp, solver, p, k, Π)
+      recompute_prox!(nlp, solver, p, k, Π) # on a donc recalculé s et g
 
-      φk(d) = dot(solver.gfk[end], d)
+      φk(d) = dot(solver.gfk[end], d) # On redéfinit le modèle car on a recalculé le gradient
       mks = φk(solver.sk[p.ps]) + solver.ψ(solver.sk[p.ps])
-      ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps()
-
-      sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
-      while ξ < 0 && sqrt_ξ_νInv > options.neg_tol && p.ps < length(Π)
-        @info " └──> R2: prox-gradient step should produce a decrease but ξ = $(ξ). Increasing precision on s."
+      solver.ξ = p.H(solver.hk[p.ps]) - p.H(mks) + p.H(max(1, abs(p.H(solver.hk[p.ps]))) * 10 * eps(p.H)) # on evite les casts en mettant tout en la précision de s. Ensuite, on cast tout en H pour éviter les erreurs d'arrondis.
+      sqrt_ξ_νInv = solver.ξ ≥ 0 ? sqrt(solver.ξ / p.ν) : sqrt(-solver.ξ / p.ν)
+      while solver.ξ < 0 && sqrt_ξ_νInv > options.neg_tol && p.ps < length(Π) # on augmente la précision sur s pour éviter les erreurs d'arrondis sur ξ
+        @info " └──> R2: prox-gradient step should produce a decrease but ξ = $(solver.ξ). Increasing precision on s."
         recompute_prox!(nlp, solver, p, k, Π)
         φk(d) = dot(solver.gfk[p.pg], d)
-        mk(d) = φk(d) + solver.ψ(d) # FP format : highest between φk and ψ
-  
+        mk(d) = φk(d) + solver.ψ(d)
         mks = mk(solver.sk[p.ps])
-        solver.special_counters[:h][p.ps] += 1
-        ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps()
-        sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
+        solver.ξ = p.H(solver.hk[p.ps]) - p.H(mks) + p.H(max(1, abs(p.H(solver.hk[p.ps]))) * 10 * eps(p.H)) # on evite les casts en mettant tout en la précision de s. Ensuite, on cast tout en H pour éviter les erreurs d'arrondis.
+
+        sqrt_ξ_νInv = solver.ξ ≥ 0 ? sqrt(solver.ξ / p.ν) : sqrt(-solver.ξ / p.ν)
       end
 
-    else
+    else # on augmente la précision sur h
       p.ph+=1
       solver.hk[p.ph] = solver.h(solver.xk[p.ph])
       solver.special_counters[:h][p.ph] += 1
-      for i=1:length(Π)
+      for i=1:length(Π) # on met à jour le conteneur de h
         solver.hk[i] = solver.hk[p.ph]
       end
       mks = dot(solver.gfk[end], solver.sk[p.ps]) + solver.ψ(solver.sk[p.ps])
-      ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps()
+      solver.ξ = p.H(solver.hk[p.ps]) - p.H(mks) + p.H(max(1, abs(p.H(solver.hk[p.ps]))) * 10 * eps(p.H)) # on evite les casts en mettant tout en la précision de s. Ensuite, on cast tout en H pour éviter les erreurs d'arrondis.
 
-      sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
-
+      sqrt_ξ_νInv = solver.ξ ≥ 0 ? sqrt(solver.ξ / p.ν) : sqrt(-solver.ξ / p.ν)
       
-      while ξ < 0 && sqrt_ξ_νInv > neg_tol && p.ph < length(Π)
-        @info " └──> R2: prox-gradient step should produce a decrease but ξ = $(ξ). Increasing precision on h."
+      while solver.ξ < 0 && sqrt_ξ_νInv > neg_tol && p.ph < length(Π) # on augmente la précision sur h pour éviter les erreurs d'arrondis sur ξ
+        @info " └──> R2: prox-gradient step should produce a decrease but ξ = $(solver.ξ). Increasing precision on h."
         p.ph+=1
         solver.hk[p.ph] = solver.h(solver.xk[p.ph])
         solver.special_counters[:h][p.ph] += 1
         for i=1:length(Π)
           solver.hk[i] = solver.hk[p.ph]
         end
-        ξ = hk[ph] - mks + max(1, abs(hk[ph])) * 10 * eps()
-        sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
+        solver.ξ = p.H(solver.hk[p.ps]) - p.H(mks) + p.H(max(1, abs(p.H(solver.hk[p.ps]))) * 10 * eps(p.H)) # on evite les casts en mettant tout en la précision de s. Ensuite, on cast tout en H pour éviter les erreurs d'arrondis.
+        sqrt_ξ_νInv = solver.ξ ≥ 0 ? sqrt(solver.ξ / p.ν) : sqrt(-solver.ξ / p.ν)
       end
     end
     p.verb == true && @info " └──> current precision on s is $(Π[p.ps]) and h is $(Π[p.ph])"
   end
-  sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
-  return ξ
+  sqrt_ξ_νInv = solver.ξ ≥ 0 ? sqrt(solver.ξ / p.ν) : sqrt(-solver.ξ / p.ν)
+  return 
 end
 
 function recompute_grad!(nlp, solver, p, k, Π) 
@@ -191,6 +188,7 @@ function recompute_prox!(nlp, solver, p, k, Π)
   for i=1:P
     solver.hk[i] = Π[i].(hxk)
   end
+
   solver.ψ = shifted(solver.h, solver.xk[p.ps])
 
   prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps].(p.ν)) # on recalcule le prox en la précision de ps. 
