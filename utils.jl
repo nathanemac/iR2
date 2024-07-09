@@ -126,7 +126,9 @@ function test_assumption_6(nlp, solver, options, p, Π, k)
       for i=1:length(Π) # on met à jour le conteneur de h
         solver.hk[i] = solver.hk[p.ph]
       end
-      mks = dot(solver.gfk[end], solver.sk[p.ps]) + solver.ψ(solver.sk[p.ps])
+      φk(d) = dot(solver.gfk[p.pg], d)
+      mk(d) = φk(d) + solver.ψ(d)
+      mks = mk(solver.sk[p.ps])      
       solver.ξ = p.H(solver.hk[p.ps]) - p.H(mks) + p.H(max(1, abs(p.H(solver.hk[p.ps]))) * 10 * eps(p.H)) # on evite les casts en mettant tout en la précision de s. Ensuite, on cast tout en H pour éviter les erreurs d'arrondis.
 
       sqrt_ξ_νInv = solver.ξ ≥ 0 ? sqrt(solver.ξ / p.ν) : sqrt(-solver.ξ / p.ν)
@@ -184,6 +186,7 @@ function recompute_prox!(nlp, solver, p, k, Π)
 
   solver.h = NormL1(Π[p.ps](1.0))
   hxk = solver.h(solver.xk[p.ps]) #TODO add selected
+  solver.special_counters[:h][p.ps] += 1
   P = length(Π)
   for i=1:P
     solver.hk[i] = Π[i].(hxk)

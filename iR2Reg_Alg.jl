@@ -23,7 +23,7 @@ function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verb
   if length(Π) == 0
     error("Π must be a non-empty vector of floating point types")
   end
-  if Π[end] == H
+  if Π[end] == H && verb==true
     @warn "Highest precision format in the algorithm and highest precision format in Π are the same (Float128). \n This may lead to unexpected behavior. \n Please consider changing the highest precision format in Π to a lower precision format, or changing the highest precision format in the algorithm to a higher precision format."
   end
   return iR2RegParams(pf, pg, ph, ps, Π, verb, activate_mp, flags, κf, κh, κ∇, κs, κξ, H, σk, ν)
@@ -86,7 +86,8 @@ function iR2Solver(
   Complex_hist = zeros(Int, max_iter+2)
   p_hist = [zeros(Int, 4) for _ in 1:max_iter]
   special_counters = Dict(:f => zeros(Int, length(Π)), :h => zeros(Int, length(Π)), :∇f => zeros(Int, length(Π)), :prox => zeros(Int, length(Π)))
-  h = reg_nlp.h
+  #h = reg_nlp.h
+  h = NormL1(Π[1](1.0)) #TODO : change this to accept other regularizers.
   ψ = has_bnds ? shifted(reg_nlp.h, x0, l_bound_m_x, u_bound_m_x, reg_nlp.selected) : shifted(reg_nlp.h, x0)
   ξ = one(params.H)
   return iR2Solver(
@@ -208,6 +209,8 @@ function iR2_lazy(reg_nlp::AbstractRegularizedNLPModel, params::iR2RegParams, op
   set_solver_specific!(stats, :Fhist, solver.Fobj_hist[1:stats.iter+1])
   set_solver_specific!(stats, :Hhist, solver.Hobj_hist[1:stats.iter+1])
   set_solver_specific!(stats, :SubsolverCounter, solver.Complex_hist[1:stats.iter+1])
+  set_solver_specific!(stats, :π_Hist, solver.p_hist)
+  set_solver_specific!(stats, :eval_counters, solver.special_counters)
   return stats
 end
 
@@ -276,9 +279,10 @@ function solve!(
   improper = false
   hxk = @views h(solver.xk[p.ph][selected]) # ph = 1 au début
   solver.special_counters[:h][p.ph] += 1
-  if hxk == Inf
+  if hxk == Inf # TODO: update this with new code
     verbose > 0 && @info "R2: finding initial guess where nonsmooth term is finite"
     prox!(solver.xk[p.ph][selected], h, x0, one(eltype(x0)))
+    solver.special_counters[:prox][p.ph] += 1
     hxk = @views h(solver.xk[p.ph][selected])
     if hxk == Inf
       status = :exception 
@@ -310,19 +314,37 @@ function solve!(
     )
   end
 
-  local ξ
   p.σk = max(1 / p.ν, options.σmin)
   
   p.ν = 1 / p.σk
   sqrt_ξ_νInv = Π[end](1.0)
 
   fxk = obj(nlp, solver.xk[p.pf]) 
+  while any(isnan, solver.fk[p.pf]) || any(isinf, solver.fk[p.pf])
+    if p.pf == P
+      @error "Reached max precision on f at initial point. Early stopping iR2-Reg."
+    end
+    @warn "Initial objective overflows/underflows. Increasing precision on f."
+    p.pf+=1
+    fxk = obj(nlp, solver.xk[p.pf])
+    solver.special_counters[:f][p.pf] += 1
+  end
   solver.special_counters[:f][p.pf] += 1 # on incrémente le compteur de f en la précision pf.
   for i=1:P
     solver.fk[i] = Π[i](fxk) # on met à jour fk en les précisions de Π. Exemple : fxk est en float16 à l'itération 0, on caste fxk en float32 et float64 pour les autres précisions et on les ajoute à fk
   end 
 
   grad!(nlp, solver.xk[p.pg], solver.gfk[p.pg])
+  while any(isnan, solver.gfk[p.pg]) || any(isinf, solver.gfk[p.pg])
+    if p.pg == P
+      @error "Reached max precision on ∇f at initial point. Early stopping iR2-Reg."
+    end
+    @warn "Initial gradient overflows/underflows. Increasing precision on g."
+    p.pg+=1
+    grad!(nlp, solver.xk[p.pg], solver.gfk[p.pg])
+    solver.special_counters[:∇f][p.pg] += 1
+  end
+
   solver.special_counters[:∇f][p.pg] += 1
   for i=1:P 
     solver.gfk[i] .= solver.gfk[p.pg]
@@ -335,19 +357,28 @@ function solve!(
   set_objective!(stats, T(solver.fk[end]) + T(solver.hk[end])) # TODO maybe change this to avoid casting
   set_solver_specific!(stats,:smooth_obj, T(solver.fk[end]))
   set_solver_specific!(stats,:nonsmooth_obj, T(solver.hk[end]))
-  h = NormL1(Π[p.ps](1.0)) # need to redefine h at each iteration because when shifting: MethodError: no method matching shifted(::NormL1{Float64}, ::Vector{Float16}) so the norm and the shift vector must be same FP Format. 
-  solver.ψ = shifted(h, solver.xk[p.ps]) # therefore ψ FP format is s FP format
+  solver.ψ = shifted(solver.h, solver.xk[p.ps]) # therefore ψ FP format is s FP format
   φk(d) = dot(solver.gfk[p.ps], d)   
   mk(d) = φk(d) + solver.ψ(d)
+
   prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps](p.ν))
+  while any(isnan, solver.sk[p.ps]) || any(isinf, solver.sk[p.ps])
+    if p.ps == P
+      @error "Reached max precision on s at initial point. Early stopping iR2-Reg."
+    end
+    @warn "Initial proximal point overflows/underflows. Increasing precision on s."
+    recompute_prox!(nlp, solver, p, 0, Π)
+  end
+  solver.special_counters[:prox][p.ps] += 1
   for i=1:P
-    solver.sk[i] .= solver.sk[p.ps] 
+    solver.sk[i] .= solver.sk[p.ps]
   end
 
   mks = mk(solver.sk[p.ps]) # on evite les casts en mettant tout en la précision de s
 
   solver.ξ = p.H(solver.hk[p.ps]) - p.H(mks) + p.H(max(1, abs(p.H(solver.hk[p.ps]))) * 10 * eps(p.H)) # on evite les casts en mettant tout en la précision de s. Ensuite, on cast tout en H pour éviter les erreurs d'arrondis.
-  solver.ξ > 0 || error("R2: prox-gradient step should produce a decrease but ξ = $(ξ)")
+
+  stats.iter > 1 && (solver.ξ > 0 || error("R2: prox-gradient step should produce a decrease but ξ = $(solver.ξ)")) # on check après la première itération car parfois Float16 crée beaucoup d'erreurs d'arrondis
   sqrt_ξ_νInv = solver.ξ ≥ 0 ? sqrt(solver.ξ / p.ν) : sqrt(-solver.ξ / p.ν)
   ϵ += ϵr * sqrt_ξ_νInv # make stopping test absolute and relative
 
@@ -386,7 +417,9 @@ function solve!(
       # Update xk, sigma_k
       solver.xkn .= solver.xk[end] .+ solver.sk[end] 
       fkn = obj(nlp, solver.xkn)
+      solver.special_counters[:f][p.pf] += 1
       hkn = @views h(solver.xkn[selected])
+      solver.special_counters[:h][end] += 1
       improper = (hkn == -Inf)
 
       Δobj = (p.H(solver.fk[end]) + p.H(solver.hk[end])) - (p.H(fkn) + p.H(hkn)) + max(1, abs(p.H(solver.fk[end]) + p.H(solver.hk[end]))) * 10 * eps(p.H) # casté en haute précision pour éviter les erreurs d'arrondis
@@ -404,14 +437,13 @@ function solve!(
           @. u_bound_m_x = u_bound - xk[end]
           set_bounds!(solver.ψ, l_bound_m_x, u_bound_m_x)
         end
-        solver.fk[p.pf] = fkn
-        solver.hk[p.ph] = hkn
         grad!(nlp, solver.xk[p.pg], solver.gfk[p.pg])
+        solver.special_counters[:∇f][p.pg] += 1
         shift!(solver.ψ, solver.xk[p.ps])
         for i=1:P
           solver.xk[i] .= solver.xk[p.ps] # on met à jour fk en les précisions de Π. Exemple : fxk est en float16 à l'itération 0, on caste fxk en float32 et float64 pour les autres précisions et on les ajoute à fk
-          solver.fk[i] = solver.fk[p.pf]
-          solver.hk[i] = solver.hk[p.ph] 
+          solver.fk[i] = Π[i](fkn)
+          solver.hk[i] = Π[i](hkn)
           solver.gfk[i] .= solver.gfk[p.pg]
         end
       end
@@ -440,9 +472,10 @@ function solve!(
       φk(d) = dot(solver.gfk[p.ps], d)   
       mk(d) = φk(d) + solver.ψ(d)
       prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps](p.ν))
+      solver.special_counters[:prox][p.ps] += 1
       mks = mk(solver.sk[p.ps]) # on evite les casts en mettant tout en la précision de s
       solver.ξ = p.H(solver.hk[p.ps]) - p.H(mks) + p.H(max(1, abs(p.H(solver.hk[p.ps]))) * 10 * eps(p.H)) # on evite les casts en mettant tout en la précision de s. Ensuite, on cast tout en H pour éviter les erreurs d'arrondis.
-      print
+
       if p.activate_mp
         test_condition_f(nlp, solver, p, Π, stats.iter)
         test_condition_h(nlp, solver, p, Π, stats.iter)
@@ -488,153 +521,3 @@ end
 #TODOs : 
 # 1) ajouter et màj les compteurs d'evaluation dans chaque precision + π_Hist
 # 2) Modifier le fait qu'on puisse passer que NormL1 pour h 
-
-
-
-
-#       # define model
-#       if solver.has_bnds #TODO updatde this later 
-#         @. solver.l_bound_m_x = solver.l_bound - solver.xk[1]
-#         @. solver.u_bound_m_x = solver.u_bound - solver.xk[1]
-#         solver.ψ = shifted(reg_nlp.h, solver.xk[1], l_bound_m_x, u_bound_m_x, selected)
-#       else
-#         reg_nlp.h = NormL1(Π[p.ps](1.0)) # need to redefine h at each iteration because when shifting: MethodError: no method matching shifted(::NormL1{Float64}, ::Vector{Float16}) so the norm and the shift vector must be same FP Format. 
-#         solver.ψ = shifted(reg_nlp.h, solver.xk[p.ps]) # therefore ψ FP format is s FP format
-#       end
-#       φk(d) = dot(solver.gfk[p.pg], d) 
-#       mk(d) = φk(d) + solver.ψ(d)
-
-#       prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps].(p.ν)) 
-#       solver.special_counters[:prox][p.ps] += 1
-
-#       solver.Complex_hist[k] += 1
-#       for i=1:P
-#         solver.sk[i] .= solver.sk[p.ps] # on a mis a jour solver.sk[p.ps] dans prox!() donc c'est celui qu'on met à jour. 
-#       end
-
-#       if p.activate_mp 
-#         test_condition_f(nlp, solver, p, Π, k)
-#         test_condition_h(nlp, solver, p, Π, k)
-#         test_condition_∇f(nlp, solver, p, Π, k)
-#       end
-
-#       # update precision levels: 
-#       max_prec_k = max(p.pf, p.pg, p.ph, p.ps)
-#       p.pf, p.pg, p.ph, p.ps = max_prec_k, max_prec_k, max_prec_k, max_prec_k
-
-#       mks = mk(solver.sk[p.ps]) 
-#       ξ = solver.hk[p.ph] - mks + max(1, abs(solver.hk[p.ph])) * 10 * eps() # en la precision de eps() #TODO : check which one is it
-
-#       if p.activate_mp
-#         ξ = test_assumption_6(nlp, solver, options, p, Π, k, ξ)
-#       end
-#       max_prec_k = max(p.pf, p.pg, p.ph, p.ps)
-#       p.pf, p.pg, p.ph, p.ps = max_prec_k, max_prec_k, max_prec_k, max_prec_k
-
-#       #-------------------------------------------------------------------------------------------
-#       # -- à partir de là, toutes les conditions de convergence sont garanties à l'itération k. --
-#       #-------------------------------------------------------------------------------------------
-
-#       sqrt_ξ_νInv = ξ ≥ 0 ? sqrt(ξ / p.ν) : sqrt(-ξ / p.ν)
-
-#       if ξ ≥ 0 && k == 1
-#         ϵ += ϵr * sqrt_ξ_νInv # make stopping test absolute and relative
-#       end
-#       if (ξ < 0 && sqrt_ξ_νInv ≤ neg_tol) || (ξ ≥ 0 && sqrt_ξ_νInv ≤ ϵ * sqrt(p.κξ))
-#         if k > 1 # add this to avoid the case where the first iteration is optimal because of float16. 
-#           optimal = true
-#           continue
-#         end
-#       end
-
-#       if (ξ < 0 && sqrt_ξ_νInv > 1e4*neg_tol) #TODO change this 
-#         status = :exception 
-#         @info @sprintf "%6d %8.1e %8.1e %8s %8s %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k solver.fk[p.pf] solver.hk[p.ph] "" "" p.σk norm(solver.xk[end]) norm(solver.xk[end]) "" Π[p.pf] Π[p.pg] Π[p.ph] Π[p.ps]
-#         @warn "R2: prox-gradient step should produce a decrease but ξ = $(ξ). Early stopping iR2-Reg."
-#         return k, status, solver.fk[end], solver.hk[end], sqrt_ξ_νInv, [p.pf, p.pg, p.ph, p.ps]
-#       end
-
-#       solver.xkn .= solver.xk[end] .+ solver.sk[end] # choix de le mettre en la précision la + haute car utilisé pour calculer ρk
-#       fkn = f(solver.xkn)
-#       solver.special_counters[:f][end] += 1
-#       hkn = @views reg_nlp.h(solver.xkn[selected])
-#       solver.special_counters[:h][p.ph] += 1
-#       hkn == -Inf && error("nonsmooth term is not proper")
-
-#       Δobj = (solver.fk[end] + solver.hk[end]) - (fkn + hkn) + max(1, abs(solver.fk[end] + solver.hk[end])) * 10 * eps() #TODO change eps() to eps(Π[p]), but which one? 
-#       ρk = Δobj / ξ # En la précision la + haute des 2
-
-#       if (verbose > 0) && (k % ptf == 0)
-#         #! format: off
-#         σ_stat = (η2 ≤ ρk < Inf) ? "↘" : (ρk < η1 ? "↗" : "=")
-#         @info @sprintf "%6d %8.1e %8.1e %7.1e %8.1e %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k solver.fk[p.pf] solver.hk[p.ph] sqrt_ξ_νInv ρk p.σk norm(solver.xk[end]) norm(solver.xk[end]) σ_stat Π[p.pf] Π[p.pg] Π[p.ph] Π[p.ps]
-#         #! format: on
-#       end
-
-#       if η2 ≤ ρk < Inf
-#         p.σk = max(p.σk / γ, σmin)
-#       end
-
-#       if η1 ≤ ρk < Inf
-#         for i=1:P
-#           solver.xk[i] .= solver.xkn # xkn casté en chacune des précisions de Π puis assigné à xk[i]
-#         end
-
-#         if has_bnds #TODO maybe change this
-#           @. solver.l_bound_m_x = solver.l_bound - solver.xk[1]
-#           @. solver.u_bound_m_x = solver.u_bound - solver.xk[1]
-#           set_bounds!(solver.ψ, l_bound_m_x, u_bound_m_x)
-#         end
-      
-#         for i=1:P
-#           solver.fk[i] = Π[i](fkn)
-#           solver.hk[i] = Π[i](hkn)
-#         end
-
-#         ∇f!(solver.gfk[p.pg], solver.xk[p.pg])
-#         solver.special_counters[:∇f][p.pg] += 1
-#         for i=1:P 
-#           solver.gfk[i] .= solver.gfk[p.pg]
-#         end
-
-#         shift!(solver.ψ, solver.xk[p.ph])
-#       end
-
-#       if ρk < η1 || ρk == Inf
-#         p.σk = p.σk * γ
-#       end
-
-#       p.ν = 1 / p.σk # !!! Under/Overflow possible here.
-#       tired = max_iter > 0 && k ≥ max_iter
-#       if !tired
-#         for i=1:P
-#           solver.mν∇fk[i] .= -Π[end].(p.ν) * solver.gfk[i]
-#         end
-#       end
-#     end
-#     return k, optimal, tired, elapsed_time, sqrt_ξ_νInv
-#   end # end of inner_loop! function
-
-#   k, optimal, tired, elapsed_time, sqrt_ξ_νInv = inner_loop!(solver, p, Π, k, verbose, max_iter, maxTime, σmin, η1, η2, γ)
-
-#   if verbose > 0
-#     if k == 1
-#       @info @sprintf "%6d %8.1e %8.1e" k solver.fk[p.pf] solver.hk[p.ph]
-#     elseif optimal
-#       #! format: off
-#       @info @sprintf "%6d %8.1e %8.1e %7.1e %8s %7.1e %7.1e %7.1e %1s %6s %6s %6s %6s" k solver.fk[p.pf] solver.hk[p.ph] sqrt(ξ/p.ν) "" p.σk norm(solver.xk[end]) norm(solver.xk[end]) "" Π[p.pf] Π[p.pg] Π[p.ph] Π[p.ps]
-#       @info "R2: terminating with √(ξ/ν) = $(sqrt_ξ_νInv)"
-#     end
-#   end
-
-#   status = if optimal
-#     :first_order
-#   elseif elapsed_time > maxTime
-#     :max_time
-#   elseif tired
-#     :max_iter
-#   else
-#     :exception
-#   end
-#   return k, status, solver.fk[end], solver.hk[end], sqrt_ξ_νInv, [p.pf, p.pg, p.ph, p.ps]
-# end

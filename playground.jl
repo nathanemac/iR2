@@ -20,11 +20,12 @@ include("iR2Reg_alg.jl")
 
 ####################
 # tests sur 1 problème
-nlp = AMPGO20(;n=100, type = Float64, backend=:generic)
+# nlp = arglinb(;backend=:generic) check car pas meme solution finale ... 
+nlp=hs246(;backend=:generic)
 nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.2, -1.345], backend=:generic)
 h = NormL1(1.0)
-options = ROSolverOptions(verbose=2, maxIter = 100, ϵa = 1e-4, ϵr = 1e-4)
-params = iR2RegParams([Float32, Float64], activate_mp=true, verb=true, H=Float64)
+options = ROSolverOptions(verbose=2, maxIter = 1000, ϵa = 1e-4, ϵr = 1e-4)
+params = iR2RegParams([Float64], activate_mp=false, verb=false)
 jso_res = RegularizedOptimization.R2(nlp, h, options)
 my_res = iR2_lazy(nlp, h, options, params) # launches vanilla R2-Reg (one might add verbose=1 for more verbosity)
 
@@ -37,7 +38,7 @@ using Statistics
 ##########################
 Π = [Float16, Float32, Float64]
 h = NormL1(1.0)
-params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ=1.)
+params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true)
 options = ROSolverOptions(verbose=0, maxIter = 1000, ϵa = 1e-4, ϵr = 1e-4)
 df_str = ":name => String[], :status => Symbol[], :objective => Real[], :iter => Int[], :elapsed_time => Float64[]"
 col_str = [":neval_obj_",":neval_h_",":neval_grad_",":neval_prox_"]
@@ -49,28 +50,29 @@ end
 stats_ir2 = eval(Meta.parse("DataFrame($df_str)"))
 meta = OptimizationProblems.meta
 names_pb_vars = meta[(meta.has_bounds .== false) .& (meta.ncon .== 0), [:nvar, :name]] #select unconstrained problems
-filter!(row -> row[:name] != "cosine", names_pb_vars)
+# filter!(row -> row[:name] != "cosine", names_pb_vars)
 filter!(row -> row[:name] != "scosine", names_pb_vars)
 filter!(row -> row[:name] != "rat42", names_pb_vars)
 filter!(row -> row[:name] != "rat43", names_pb_vars)
+filter!(row -> row[:name] != "mgh10", names_pb_vars)
 
 
 for pb in eachrow(names_pb_vars)
-  nlp = eval(Meta.parse("ADNLPProblems.$(pb[:name])(type=Val(Float64),backend = :generic)"))
+  nlp = eval(Meta.parse("ADNLPProblems.$(pb[:name])(type=Float64,backend = :generic)"))
   @show nlp.meta.name
-  params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ = 1.)
+  params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, H=Float64)
   
-  stat_ir2 = iR2(nlp, h, options, params_mp)
+  stat_ir2 = iR2_lazy(nlp, h, options, params_mp)
   push!(stats_ir2,
       [nlp.meta.name,
       stat_ir2.status,
-      [stat_ir2.objective]...,
+      [stat_ir2.solver_specific[:smooth_obj] + stat_ir2.solver_specific[:nonsmooth_obj]]...,
       [stat_ir2.iter]...,
       [stat_ir2.elapsed_time]...,
-      [stat_ir2.solver_specific[:special_counters][:f][i] for i = 1:length(Π)]...,
-      [stat_ir2.solver_specific[:special_counters][:h][i] for i = 1:length(Π)]...,
-      [stat_ir2.solver_specific[:special_counters][:∇f][i] for i = 1:length(Π)]...,
-      [stat_ir2.solver_specific[:special_counters][:prox][i] for i = 1:length(Π)]...]
+      [stat_ir2.solver_specific[:eval_counters][:f][i] for i = 1:length(Π)]...,
+      [stat_ir2.solver_specific[:eval_counters][:h][i] for i = 1:length(Π)]...,
+      [stat_ir2.solver_specific[:eval_counters][:∇f][i] for i = 1:length(Π)]...,
+      [stat_ir2.solver_specific[:eval_counters][:prox][i] for i = 1:length(Π)]...]
     )
 end
 
@@ -79,14 +81,14 @@ df_str = ":name => String[], :status => Symbol[], :objective => Real[], :iter =>
 stats_r2 = eval(Meta.parse("DataFrame($df_str)"))
 
 for pb in eachrow(names_pb_vars)
-  nlp = eval(Meta.parse("ADNLPProblems.$(pb[:name])(type=Val(Float64),backend = :generic)"))
+  nlp = eval(Meta.parse("ADNLPProblems.$(pb[:name])(type=Float64,backend = :generic)"))
   @show nlp.meta.name
   
   stat_r2 = RegularizedOptimization.R2(nlp, h, options)
   push!(stats_r2,
       [nlp.meta.name,
       stat_r2.status,
-      [stat_r2.objective]...,
+      [stat_r2.solver_specific[:Fhist][end] + stat_r2.solver_specific[:Hhist][end]]...,
       [stat_r2.iter]...,
       [stat_r2.elapsed_time]...,
       [nlp.counters.neval_obj]...,
@@ -106,6 +108,9 @@ stats_mp = Dict(:iR2Reg => stats_ir2,
 # pour chaque problème, je calcule le cout d'évaluations du gradient avec pour cout d'evaluation de 1 gradient en Float16 = 1, en Float32 = 4 et en Float64 = 16
 cost_grad_ir2 = sum(stats_ir2[!,:neval_grad_Float16]) + 4*sum(stats_ir2[!,:neval_grad_Float32]) + 16*sum(stats_ir2[!,:neval_grad_Float64])
 cost_grad_r2 = 16*sum(stats_r2[!,:neval_grad])
+
+# différence entre les valeurs de l'objectif pour les 2 algos:
+diff_obj = sum(stats_ir2[!,:objective]) - sum(stats_r2[!,:objective])
 
 # pourcentage d'évaluations du gradient en Float16, Float32 et Float64
 percentage_eval_grad_f64=sum(stats_ir2[!,:neval_grad_Float64]) /( sum(stats_ir2[!,:neval_grad_Float16]) + sum(stats_ir2[!,:neval_grad_Float32]) + sum(stats_ir2[!,:neval_grad_Float64]))
