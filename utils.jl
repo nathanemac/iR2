@@ -12,7 +12,7 @@ function check_κ_valid(κs, κf, κ∇, κh, η1, η2)
 #################### Real MP #########################
 ######################################################
 
-function test_condition_f(nlp, solver, p, Π, k)
+function test_condition_f!(nlp, solver, p, Π, k)
   while abs(p.H(solver.fk[p.pf])) * (1 - 1 / p.H((1 + eps(Π[p.pf])))) > p.κf * p.σk * norm(p.H.(solver.sk[p.ps]))^2 
     if ((Π[p.pf] == Π[end]) && (Π[p.ps] == Π[end]))
       if (p.flags[1] == false)
@@ -38,7 +38,7 @@ function test_condition_f(nlp, solver, p, Π, k)
   return 
 end
 
-function test_condition_h(nlp, solver, p, Π, k) # p : current level of precision
+function test_condition_h!(nlp, solver, p, Π, k) # p : current level of precision
   while abs(p.H(solver.hk[p.ph])) * (1- 1 / p.H(1 + eps(Π[p.ph]))) > p.κh * p.σk * norm(p.H.(solver.sk[p.ps]))^2
     if (Π[p.ph] == Π[end]) && (Π[p.ps] == Π[end])
       if (p.flags[2] == false)
@@ -65,7 +65,7 @@ function test_condition_h(nlp, solver, p, Π, k) # p : current level of precisio
 end
 
 
-function test_condition_∇f(nlp, solver, p, Π, k)
+function test_condition_∇f!(nlp, solver, p, Π, k)
   while abs(dot(p.H.(solver.gfk[p.pg]), p.H.(solver.sk[p.ps]))) * (1- 1 / p.H(1 + eps(Π[p.pg]))) > p.κ∇ * p.σk * norm(p.H.(solver.sk[p.ps]))
     if (Π[p.pg] == Π[end]) && (Π[p.ps] == Π[end])
       if (p.flags[3] == false)
@@ -88,7 +88,7 @@ end
 
 
 # check assumption 6
-function test_assumption_6(nlp, solver, options, p, Π, k)
+function test_assumption_6!(nlp, solver, options, p, Π, k)
   while solver.ξ < 1/2 * p.κs * p.σk * norm(p.H.(solver.sk[p.ps]))^2 
     if (Π[p.ps] == Π[end]) && (Π[p.ph] == Π[end]) # on a atteint la précision maximale sur les 2 variables h et s
       if (p.flags[2] == false)
@@ -225,4 +225,44 @@ function get_status(
   else
     :unknown
   end
+end
+
+function clone_params(params::iR2RegParams)
+  return iR2RegParams(
+      params.Π,
+      pf=params.pf,
+      pg=params.pg,
+      ph=params.ph,
+      ps=params.ps,
+      verb=params.verb,
+      activate_mp=params.activate_mp,
+      flags=copy(params.flags),
+      κf=params.κf,
+      κh=params.κh,
+      κ∇=params.κ∇,
+      κs=params.κs,
+      κξ=params.κξ,
+      H=params.H,
+      σk=params.σk,
+      ν=params.ν
+  )
+end
+
+function Base.:(==)(a::iR2RegParams, b::iR2RegParams)
+  return a.Π == b.Π &&
+         a.pf == b.pf &&
+         a.pg == b.pg &&
+         a.ph == b.ph &&
+         a.ps == b.ps &&
+         a.verb == b.verb &&
+         a.activate_mp == b.activate_mp &&
+         a.flags == b.flags &&
+         a.κf == b.κf &&
+         a.κh == b.κh &&
+         a.κ∇ == b.κ∇ &&
+         a.κs == b.κs &&
+         a.κξ == b.κξ &&
+         a.H == b.H &&
+         a.σk == b.σk &&
+         a.ν == b.ν
 end
