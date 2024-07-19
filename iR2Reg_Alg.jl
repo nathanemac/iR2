@@ -673,3 +673,4 @@ end
 #TODOs: 
 # 1. Implement bound constraints
 # 2. Implement other regularizers
+# 3. Implement parameters reinitialization
