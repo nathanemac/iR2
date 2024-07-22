@@ -21,9 +21,9 @@ function test_condition_f!(nlp, solver, p, Π, k)
       end
       break # on passe sous le tapis pour les fois d'après que la condition passe pas grâce à flags[1]
     end
-    p.verb == true && @info "condition on f not reached at iteration $k with precision $(Π[p.pf]) on f and $(Π[p.ps]) on s. Increasing precision : "
+    p.verbose_mp == true && @info "condition on f not reached at iteration $k with precision $(Π[p.pf]) on f and $(Π[p.ps]) on s. Increasing precision : "
     if Π[p.pf] == Π[end]
-      p.verb == true && @info " └──> maximum precision already reached on f. Trying to increase precision on s."
+      p.verbose_mp == true && @info " └──> maximum precision already reached on f. Trying to increase precision on s."
       recompute_prox!(nlp, solver, p, k, Π)
     else
       p.pf+=1
@@ -32,7 +32,7 @@ function test_condition_f!(nlp, solver, p, Π, k)
       for i=1:length(Π)
         solver.fk[i] = Π[i](fxk)
       end
-    p.verb == true && @info " └──> current precision on f is now $(Π[p.pf]) and s is $(Π[p.ps])"
+    p.verbose_mp == true && @info " └──> current precision on f is now $(Π[p.pf]) and s is $(Π[p.ps])"
     end
   end
   return 
@@ -47,7 +47,7 @@ function test_condition_h!(nlp, solver, p, Π, k) # p : current level of precisi
       end
       break
     end
-    p.verb == true && @info "condition on h not reached at iteration $k with precision $(Π[p.ph]) on h and $(Π[p.ps]) on s. Increasing precision : "
+    p.verbose_mp == true && @info "condition on h not reached at iteration $k with precision $(Π[p.ph]) on h and $(Π[p.ps]) on s. Increasing precision : "
     if Π[p.ph] == Π[end] 
       @info " └──> maximum precision already reached on h. Trying to increase precision on s."
       recompute_prox!(nlp, solver, p, k, Π)
@@ -59,7 +59,7 @@ function test_condition_h!(nlp, solver, p, Π, k) # p : current level of precisi
         solver.hk[i] = solver.hk[p.ph]
       end
     end
-    p.verb == true && @info " └──> current precision on s is now $(Π[p.ps]) and h is $(Π[p.ph])"
+    p.verbose_mp == true && @info " └──> current precision on s is now $(Π[p.ps]) and h is $(Π[p.ph])"
   end
   return
 end
@@ -74,14 +74,14 @@ function test_condition_∇f!(nlp, solver, p, Π, k)
       end
       break
     end
-    p.verb == true && @info "condition on ∇f not reached at iteration $k with precision $(Π[p.pg]) on ∇f and $(Π[p.ps]) on s. Increasing precision : "
+    p.verbose_mp == true && @info "condition on ∇f not reached at iteration $k with precision $(Π[p.pg]) on ∇f and $(Π[p.ps]) on s. Increasing precision : "
     if Π[p.pg] == Π[end] 
-      p.verb == true && @info " └──> maximum precision already reached on ∇f. Trying to increase precision on s."
+      p.verbose_mp == true && @info " └──> maximum precision already reached on ∇f. Trying to increase precision on s."
       recompute_prox!(nlp, solver, p, k, Π)
     else
       recompute_grad!(nlp, solver, p, k, Π)
     end
-    p.verb == true && @info " └──> current precision on s is now $(Π[p.ps]) and ∇f is $(Π[p.pg])"
+    p.verbose_mp == true && @info " └──> current precision on s is now $(Π[p.ps]) and ∇f is $(Π[p.pg])"
   end
   return
 end
@@ -98,9 +98,9 @@ function test_assumption_6!(nlp, solver, options, p, Π, k)
       break
     end
 
-    p.verb == true && @info "condition on Assumption 6 not reached at iteration $k with precision $(Π[p.ps]) on s and $(Π[p.ph]) on h. Increasing precision : "
+    p.verbose_mp == true && @info "condition on Assumption 6 not reached at iteration $k with precision $(Π[p.ps]) on s and $(Π[p.ph]) on h. Increasing precision : "
     if Π[p.ph] == Π[end] # on augmente la précision sur s
-      p.verb == true && @info " └──> maximum precision already reached on h to satisfy Assumption 6. Trying to increase precision on s."
+      p.verbose_mp == true && @info " └──> maximum precision already reached on h to satisfy Assumption 6. Trying to increase precision on s."
 
       recompute_prox!(nlp, solver, p, k, Π) # on a donc recalculé s et g
 
@@ -145,7 +145,7 @@ function test_assumption_6!(nlp, solver, options, p, Π, k)
         sqrt_ξ_νInv = solver.ξ ≥ 0 ? sqrt(solver.ξ / p.ν) : sqrt(-solver.ξ / p.ν)
       end
     end
-    p.verb == true && @info " └──> current precision on s is $(Π[p.ps]) and h is $(Π[p.ph])"
+    p.verbose_mp == true && @info " └──> current precision on s is $(Π[p.ps]) and h is $(Π[p.ph])"
   end
   sqrt_ξ_νInv = solver.ξ ≥ 0 ? sqrt(solver.ξ / p.ν) : sqrt(-solver.ξ / p.ν)
   return 
@@ -157,7 +157,7 @@ function recompute_grad!(nlp, solver, p, k, Π)
     return 
   end
   p.pg+=1
-  p.verb==true && @info "recomputing gradient at iteration $k with precision $(Π[p.pg])"
+  p.verbose_mp==true && @info "recomputing gradient at iteration $k with precision $(Π[p.pg])"
   grad!(nlp, solver.xk[p.pg], solver.gfk[p.pg])
   solver.special_counters[:∇f][p.pg] += 1
   for i=1:length(Π)
@@ -234,7 +234,7 @@ function clone_params(params::iR2RegParams)
       pg=params.pg,
       ph=params.ph,
       ps=params.ps,
-      verb=params.verb,
+      verbose_mp=params.verbose_mp,
       activate_mp=params.activate_mp,
       flags=copy(params.flags),
       κf=params.κf,
@@ -254,7 +254,7 @@ function Base.:(==)(a::iR2RegParams, b::iR2RegParams)
          a.pg == b.pg &&
          a.ph == b.ph &&
          a.ps == b.ps &&
-         a.verb == b.verb &&
+         a.verbose_mp == b.verbose_mp &&
          a.activate_mp == b.activate_mp &&
          a.flags == b.flags &&
          a.κf == b.κf &&

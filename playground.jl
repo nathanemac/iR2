@@ -14,8 +14,8 @@ using Quadmath
 using RegularizedProblems
 
 #include("iR2_Alg MP.jl")
-include("utils.jl")
 include("iR2Reg_alg.jl")
+include("utils.jl")
 #include("new_version_R2Reg.jl")
 
 ####################
@@ -23,9 +23,9 @@ include("iR2Reg_alg.jl")
 # nlp = arglinb(;backend=:generic) check car pas meme solution finale ... 
 nlp=watson(;backend=:generic)
 nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.2, -1.345], backend=:generic)
-h = NormL1(1.0)
+h = NormL0(1.0)
 options = ROSolverOptions(verbose=5, maxIter = 100, ϵa = 1e-4, ϵr = 1e-4)
-params = iR2RegParams([Float16, Float32, Float64], activate_mp=true, verb=true)
+params = iR2RegParams([Float64], activate_mp=false)
 jso_res = RegularizedOptimization.R2(nlp, h, options)
 my_res = iR2Reg(nlp, h, options, params) # launches vanilla R2-Reg (one might add verbose=1 for more verbosity)
 
@@ -38,7 +38,7 @@ using Statistics
 ##########################
 Π = [Float16, Float32, Float64]
 h = NormL1(1.0)
-params_mp = iR2RegParams(Π, verb=false, activate_mp=true)
+params_mp = iR2RegParams(Π, verbose_mp=false, activate_mp=true)
 options = ROSolverOptions(verbose=0, maxIter = 1000, ϵa = 1e-4, ϵr = 1e-4)
 df_str = ":name => String[], :status => Symbol[], :objective => Real[], :iter => Int[], :elapsed_time => Float64[]"
 col_str = [":neval_obj_",":neval_h_",":neval_grad_",":neval_prox_"]
@@ -60,7 +60,7 @@ filter!(row -> row[:name] != "mgh10", names_pb_vars)
 for pb in eachrow(names_pb_vars)
   nlp = eval(Meta.parse("ADNLPProblems.$(pb[:name])(type=Float64,backend = :generic)"))
   @show nlp.meta.name
-  params_mp = iR2RegParams(Π, verb=false, activate_mp=true)
+  params_mp = iR2RegParams(Π, verbose_mp=false, activate_mp=true)
   
   stat_ir2 = iR2_lazy(nlp, h, options, params_mp)
   push!(stats_ir2,
@@ -199,7 +199,7 @@ for mI in MaxIters
 
   for pb in eachrow(names_pb_vars)
     nlp = eval(Meta.parse("ADNLPProblems.$(pb[:name])(type=Float64,backend = :generic)"))
-    params_mp = iR2RegParams(Π, verb=false, activate_mp=true)
+    params_mp = iR2RegParams(Π, verbose_mp=false, activate_mp=true)
   
     stat_ir2 = iR2_lazy(nlp, h, options, params_mp)
     push!(stats_ir2,
@@ -282,7 +282,7 @@ stats_Kξ = Dict(
   :cost_grad_ir2 => Int[],
   :cost_grad_r2 => Int[])
 for κξ in Kξ
-  params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ=κξ)
+  params_mp = iR2RegParams([Float16, Float32, Float64], verbose_mp=false, activate_mp=true, κξ=κξ)
   options = ROSolverOptions(verbose=0, maxIter = 1000, ϵa = 1e-4, ϵr = 1e-4)
   df_str = ":name => String[], :status => Symbol[], :objective => Real[], :iter => Int[], :elapsed_time => Float64[]"
   col_str = [":neval_obj_",":neval_h_",":neval_grad_",":neval_prox_"]
@@ -295,7 +295,7 @@ for κξ in Kξ
 
   for pb in eachrow(names_pb_vars)
     nlp = eval(Meta.parse("ADNLPProblems.$(pb[:name])(type=Val(Float64),backend = :generic)"))
-    params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ=κξ)
+    params_mp = iR2RegParams([Float16, Float32, Float64], verbose_mp=false, activate_mp=true, κξ=κξ)
   
     stat_ir2 = iR2(nlp, h, options, params_mp)
     push!(stats_ir2,
@@ -339,7 +339,7 @@ plot!(Kξ, stats_Kξ[:cost_grad_r2], label="cost grad eval R2")
 # trying to find out why iR2 is not able to solve some problems that R2 can solve
 for pb in eachrow(names_pb_vars)
   nlp = eval(Meta.parse("ADNLPProblems.$(pb[:name])(type=Val(Float64),backend = :generic)"))
-  params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ=1.)
+  params_mp = iR2RegParams([Float16, Float32, Float64], verbose_mp=false, activate_mp=true, κξ=1.)
   options = ROSolverOptions(verbose=0, maxIter = 1000, ϵa = 1e-4, ϵr = 1e-4)
   my_res = iR2(nlp, h, options, params_mp)
   jso_res = RegularizedOptimization.R2(nlp, h, options)
@@ -349,7 +349,7 @@ for pb in eachrow(names_pb_vars)
 end
 nlp=jennrichsampson(; type = Val(Float64), backend=:generic)
 options = ROSolverOptions(verbose=1, maxIter = 5, ϵa = 1e-4, ϵr = 1e-4)
-params_mp = iR2RegParams([Float16, Float32, Float64], verb=false, activate_mp=true, κξ=1.)
+params_mp = iR2RegParams([Float16, Float32, Float64], verbose_mp=false, activate_mp=true, κξ=1.)
 my_res = iR2(nlp, h, options, params_mp)
 jso_res = RegularizedOptimization.R2(nlp, h, options)
 

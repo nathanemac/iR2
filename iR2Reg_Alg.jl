@@ -13,7 +13,7 @@ Structure to hold parameters for the iR2Reg algorithm, including mixed-precision
 - `pg::Int`: Current level of precision for `∇f`.
 - `ph::Int`: Current level of precision for `h`.
 - `ps::Int`: Current level of precision for `s`.
-- `verb::Bool`: Whether to activate verbosity in mixed-precision mode.
+- `verbose_mp::Bool`: Whether to activate verbosity in mixed-precision mode.
 - `activate_mp::Bool`: Whether to activate mixed-precision mode.
 - `flags::Vector{Bool}`: Flags to check if maximum precision for `f`, `h`, and `s` has been reached. Once a flag is set to true, precision will no longer be increased, and no warnings will be printed.
 - `κf::T`: Condition on `f` (refer to the paper for more details).
@@ -31,7 +31,7 @@ mutable struct iR2RegParams{T<:Real, H<:Real}
   pg::Int
   ph::Int
   ps::Int
-  verb::Bool
+  verbose_mp::Bool
   activate_mp::Bool
   flags::Vector{Bool}
   κf::T
@@ -46,7 +46,7 @@ end
 
 
 """
-    iR2RegParams(Π::Vector{DataType}; pf=1, pg=1, ph=1, ps=1, verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1., H=Float128, σk=H(1.), ν=eps(H)^(1/5))
+    iR2RegParams(Π::Vector{DataType}; pf=1, pg=1, ph=1, ps=1, verbose_mp::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1., H=Float128, σk=H(1.), ν=eps(H)^(1/5))
 
 Create an instance of the iR2RegParams struct with specified or default parameter values.
 
@@ -56,7 +56,7 @@ Create an instance of the iR2RegParams struct with specified or default paramete
 - `pg::Int=1`: Current level of precision on ∇f.
 - `ph::Int=1`: Current level of precision on h.
 - `ps::Int=1`: Current level of precision on s.
-- `verb::Bool=false`: Whether to activate verbosity in mixed-precision mode.
+- `verbose_mp::Bool=false`: Whether to activate verbosity in mixed-precision mode.
 - `activate_mp::Bool=true`: Whether to activate mixed-precision mode.
 - `flags::Vector{Bool}=[false, false, false]`: Flags to check if maximum precision on f, h, and s has been reached. Once a flag is set to true, precision will no longer be increased, and no warnings will be printed.
 - `κf=1e-5`: Condition on f (refer to the paper for more details).
@@ -76,17 +76,23 @@ Create an instance of the iR2RegParams struct with specified or default paramete
 - Displays a warning if the highest precision format in the algorithm and the highest precision format in `Π` are the same (Float128), as this may lead to unexpected behavior.
 
 # Example
-params = iR2RegParams([Float16, Float32, Float64], activate_mp=true, verb=true) # for mixed-precision with additional verbosity
-params = iR2RegParams([Float32]; activate_mp=false,  verb=false) # for single precision without mixed-precision
+params = iR2RegParams([Float16, Float32, Float64], activate_mp=true, verbose_mp=true) # for mixed-precision with additional verbosity
+params = iR2RegParams([Float32]; activate_mp=false,  verbose_mp=false) # for single precision without mixed-precision
 """
-function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verb::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1., H=Float128, σk=H(1.), ν=eps(H)^(1/5))
+function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verbose_mp::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1., H=Float128, σk=H(1.), ν=eps(H)^(1/5))
   if length(Π) == 0
     error("Π must be a non-empty vector of floating point types")
   end
-  if Π[end] == H && verb==true
+  if Π[end] == H && verbose_mp==true
     @warn "Highest precision format in the algorithm (H) and highest precision format in Π are the same ($H). \n This may lead to unexpected behavior. \n Please consider changing the highest precision format in Π to a lower precision format, or changing the highest precision format in the algorithm to a higher precision format."
   end
-  return iR2RegParams(Π, pf, pg, ph, ps, verb, activate_mp, flags, κf, κh, κ∇, κs, κξ, H, σk, ν)
+  if length(Π) > 1 && activate_mp == false
+    @warn "Mixed-precision mode is deactivated but Π contains several precisions (Π = $(Π). Only the first precision in Π will be used."
+  end
+  if !activate_mp && verbose_mp
+    @warn "Mixed-precision verbose is activated but mixed-precision is deactivated. No information will be printed about the precision levels."
+  end
+  return iR2RegParams(Π, pf, pg, ph, ps, verbose_mp, activate_mp, flags, κf, κh, κ∇, κs, κξ, H, σk, ν)
 end
 
 """
@@ -192,9 +198,16 @@ function iR2Solver(
   Complex_hist = zeros(Int, max_iter+2)
   p_hist = [zeros(Int, 4) for _ in 1:max_iter]
   special_counters = Dict(:f => zeros(Int, length(Π)), :h => zeros(Int, length(Π)), :∇f => zeros(Int, length(Π)), :prox => zeros(Int, length(Π)))
-  #h = reg_nlp.h
-  h = NormL1(Π[1](1.0)) #TODO : change this to accept other regularizers.
-  ψ = has_bnds ? shifted(reg_nlp.h, x0, l_bound_m_x, u_bound_m_x, reg_nlp.selected) : shifted(reg_nlp.h, x0)
+  if occursin( "NormL0", string(reg_nlp.h))
+    h = NormL0(Π[1](reg_nlp.h.lambda))
+  elseif occursin( "NormL1", string(reg_nlp.h))
+    h = NormL1(Π[1](reg_nlp.h.lambda))
+  elseif occursin( "NormL2", string(reg_nlp.h))
+    h = NormL2(Π[1](reg_nlp.h.lambda))
+  else
+    @error "Regularizer not supported. One must choose between NormL0, NormL1, NormL2." #TODO add more regularizers.
+  end
+  ψ = nothing # initialize ψ to nothing then set it in the main loop
   ξ = one(params.H)
   return iR2Solver(
     xk,
@@ -274,7 +287,7 @@ The objective and gradient of `nlp` will be accessed.
   - nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.2, -1.345], backend=:generic)
   - h = NormL1(1.0)
   - options = ROSolverOptions(verbose=5, maxIter = 100, ϵa = 1e-4, ϵr = 1e-4)
-  - params = iR2RegParams([Float16, Float32, Float64], activate_mp=true, verb=true)
+  - params = iR2RegParams([Float16, Float32, Float64], activate_mp=true, verbose_mp=true)
   - my_res = iR2Reg(nlp, h, options, params)
 
 * Output:
@@ -309,10 +322,7 @@ function iR2Reg(
   kwargs_dict = Dict(kwargs...)
   selected = pop!(kwargs_dict, :selected, 1:nlp.meta.nvar)
   x0 = pop!(kwargs_dict, :x0, nlp.meta.x0)
-  
-  # Clone the initial parameters
-  initial_params = clone_params(params)
-  
+    
   reg_nlp = RegularizedNLPModel(nlp, h, selected)
   
   stats = iR2Reg(
@@ -332,18 +342,12 @@ function iR2Reg(
       ν = params.ν,
       γ = options.γ,
   )
-  
-  # Check if parameters have changed, and if not, reset them
-  if params == initial_params
-      params = clone_params(initial_params)
-      # TODO : check if we need to reset the parameters in the solver
-  end
-  
+
   return stats
 end
 
 function iR2Reg(reg_nlp::AbstractRegularizedNLPModel, params::iR2RegParams, options::ROSolverOptions; kwargs...)
-  kwargs_dict = Dict(kwargs...)
+  #kwargs_dict = Dict(kwargs...)
   solver = iR2Solver(reg_nlp, params, options)
   stats = GenericExecutionStats(reg_nlp.model)
   cb = (nlp, solver, stats) -> begin
@@ -673,4 +677,3 @@ end
 #TODOs: 
 # 1. Implement bound constraints
 # 2. Implement other regularizers
-# 3. Implement parameters reinitialization
