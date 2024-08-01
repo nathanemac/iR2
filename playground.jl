@@ -22,9 +22,9 @@ include("utils.jl")
 # tests sur 1 problème
 # nlp = arglinb(;backend=:generic) check car pas meme solution finale ... 
 nlp=watson(;backend=:generic)
-nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, [-1.2, -1.345], backend=:generic)
+nlp = ADNLPModel(x -> (1-x[1])^2 + 100(x[1]-x[2]^2)^2, Float32.([-1.2, -1.345]), backend=:generic)
 h = NormL1(1.0)
-options = ROSolverOptions(verbose=1, maxIter = 100, ϵa = 1e-4, ϵr = 1e-4)
+options = ROSolverOptions(verbose=1, maxIter = 100, ϵa = 1e-4, ϵr = 1e-4, ν=1.0)
 params = iR2RegParams([Float64], H=Float64, activate_mp=false)
 jso_res = RegularizedOptimization.R2(nlp, h, options)
 my_res = iR2Reg(nlp, h, options, params) # launches vanilla R2-Reg (one might add verbose=1 for more verbosity)
@@ -62,7 +62,7 @@ for pb in eachrow(names_pb_vars)
   @show nlp.meta.name
   params_mp = iR2RegParams(Π, verbose_mp=false, activate_mp=true)
   
-  stat_ir2 = iR2_lazy(nlp, h, options, params_mp)
+  stat_ir2 = iR2Reg(nlp, h, options, params_mp)
   push!(stats_ir2,
       [nlp.meta.name,
       stat_ir2.status,

@@ -468,12 +468,10 @@ function solve!(
       colsep = 1,
     )
   end
-  println(p.ν)
+  
   p.σk = max(1 / p.ν, options.σmin)
   
   p.ν = 1 / p.σk
-  println(p.ν)
-
   sqrt_ξ_νInv = Π[end](1.0)
 
   fxk = obj(nlp, solver.xk[p.pf]) 
@@ -679,3 +677,4 @@ end
 # 1. Implement bound constraints
 # 2. Implement other regularizers
 # 3. Implement overflow/underflow check for ν and σ. 
+# 4. check overflow pour les utils. 
