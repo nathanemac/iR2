@@ -79,7 +79,7 @@ Create an instance of the iR2RegParams struct with specified or default paramete
 params = iR2RegParams([Float16, Float32, Float64], activate_mp=true, verbose_mp=true) # for mixed-precision with additional verbosity
 params = iR2RegParams([Float32]; activate_mp=false,  verbose_mp=false) # for single precision without mixed-precision
 """
-function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verbose_mp::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1., H=Float128, σk=H(1.), ν=eps(H)^(1/5))
+function iR2RegParams(Π::Vector{DataType}; pf = 1, pg = 1, ph = 1, ps = 1, verbose_mp::Bool=false, activate_mp::Bool=true, flags::Vector{Bool}=[false, false, false], κf=1e-5, κh=2e-5, κ∇=4e-2, κs=1., κξ=1., H=Float128, σk=H(1.), ν=H(1.0))
   if length(Π) == 0
     error("Π must be a non-empty vector of floating point types")
   end
@@ -468,10 +468,12 @@ function solve!(
       colsep = 1,
     )
   end
-
+  println(p.ν)
   p.σk = max(1 / p.ν, options.σmin)
   
   p.ν = 1 / p.σk
+  println(p.ν)
+
   sqrt_ξ_νInv = Π[end](1.0)
 
   fxk = obj(nlp, solver.xk[p.pf]) 
@@ -515,7 +517,6 @@ function solve!(
   solver.ψ = shifted(solver.h, solver.xk[p.ps]) # therefore ψ FP format is s FP format
   φk(d) = dot(solver.gfk[p.ps], d)   
   mk(d) = φk(d) + solver.ψ(d)
-
   prox!(solver.sk[p.ps], solver.ψ, solver.mν∇fk[p.ps], Π[p.ps](p.ν))
   while (any(isnan, solver.sk[p.ps]) || any(isinf, solver.sk[p.ps])) && activate_mp
     if p.ps == P
@@ -571,6 +572,7 @@ function solve!(
     while !done
       # Update xk, sigma_k
       solver.xkn .= solver.xk[end] .+ solver.sk[end] 
+      
       fkn = obj(nlp, solver.xkn)
       solver.special_counters[:f][p.pf] += 1
       hkn = @views h(solver.xkn[selected])
@@ -579,7 +581,6 @@ function solve!(
 
       Δobj = (p.H(solver.fk[end]) + p.H(solver.hk[end])) - (p.H(fkn) + p.H(hkn)) + max(1, abs(p.H(solver.fk[end]) + p.H(solver.hk[end]))) * 10 * eps(p.H) # casté en haute précision pour éviter les erreurs d'arrondis
       global ρk = Δobj / solver.ξ  # ρk est en la precision de Δobj donc H
-
       verbose > 0 && 
       stats.iter % verbose == 0 &&
       @info log_row(Any[stats.iter, solver.fk[end], solver.hk[end], sqrt_ξ_νInv, ρk, p.σk, norm(solver.xk[end]), norm(solver.sk[end]), (η2 ≤ ρk < Inf) ? "↘" : (ρk < η1 ? "↗" : "=")], colsep = 1)
@@ -677,3 +678,4 @@ end
 #TODOs: 
 # 1. Implement bound constraints
 # 2. Implement other regularizers
+# 3. Implement overflow/underflow check for ν and σ. 
